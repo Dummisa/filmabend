@@ -6,7 +6,12 @@
  *
  * Sammlungen:
  *   users/{userId}                 { name, nameLower, createdAt }
- *   lists/{userId}                 { watch: {m<id>: Zeit}, seen: {m<id>: Zeit}, updatedAt }
+ *   lists/{userId}                 { watch: {m<id>: Zeit}  private Watchlist
+ *                                    seen:  {m<id>: Zeit}  gesehen
+ *                                    share: {<gid>: {m<id>: Zeit}}  in welcher Gruppe geteilt
+ *                                    shareInit: {<gid>: true}       share für Gruppe angelegt
+ *                                    inbox: {<id>: {movieId, by, gid, at}}  Rückfragen "gesehen"
+ *                                    updatedAt }
  *   movies/{tmdbId}                Filmdaten von TMDB (geteilt, Cache)
  *   groups/{groupId}               { name, code, members: [userId], createdBy, createdAt }
  *   groups/{groupId}/votes/{id}    Abstimmungen
@@ -64,7 +69,7 @@ export function watchMovies(cb, onError) {
 export function watchList(uid, cb, onError) {
   return fs.onSnapshot(fs.doc(db, 'lists', uid), snap => {
     const d = snap.exists() ? snap.data() : {};
-    cb({ watch: d.watch || {}, seen: d.seen || {} });
+    cb({ watch: d.watch || {}, seen: d.seen || {}, share: d.share || {}, shareInit: d.shareInit || {}, inbox: d.inbox || {} });
   }, onError);
 }
 
@@ -88,7 +93,14 @@ export async function createUser(name) {
 export async function ensureList(uid) {
   const ref = fs.doc(db, 'lists', uid);
   const snap = await fs.getDoc(ref);
-  if (!snap.exists()) await fs.setDoc(ref, { watch: {}, seen: {}, updatedAt: now() });
+  if (!snap.exists()) await fs.setDoc(ref, { watch: {}, seen: {}, share: {}, shareInit: {}, inbox: {}, updatedAt: now() });
+}
+
+/* Beliebige Felder einer Liste ändern: { 'share.<gid>.m123': Zeit | null } – null löscht */
+export function patchList(uid, fields) {
+  const patch = { updatedAt: now() };
+  Object.entries(fields).forEach(([k, v]) => { patch[k] = v === null ? fs.deleteField() : v; });
+  return fs.updateDoc(fs.doc(db, 'lists', uid), patch);
 }
 
 /* ---------- Persönliche Liste ----------

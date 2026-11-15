@@ -507,6 +507,23 @@ body.in-group .group-only { display: flex; }
 .method.active { border-color: var(--accent); background: var(--accent-soft); }
 .form-count { margin-top: 16px; font-size: 0.9rem; }
 
+/* Auswahl-Dialoge (Listen wählen, Rückfragen) */
+.picks { display: grid; gap: 6px; margin: 6px 0 4px; }
+.pick {
+  display: flex; align-items: center; gap: 10px; cursor: pointer;
+  padding: 10px 12px; border-radius: 10px; background: var(--row); border: 1px solid var(--border);
+}
+.pick:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
+.pick.disabled { opacity: 0.6; cursor: default; }
+.pick input { width: 18px; height: 18px; accent-color: var(--accent); flex: none; }
+.pick-all { font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
+.linkbtn { background: none; border: 0; color: #93b4ff; cursor: pointer; padding: 2px 0; font-size: inherit; }
+.inbox-actions { display: grid; gap: 8px; margin-top: 12px; }
+.inbox-actions .btn { text-align: left; padding: 11px 14px; white-space: normal; }
+.nom-chips { align-items: center; }
+.nom-input { width: 84px; padding: 4px 10px !important; border-radius: 999px !important; font-size: 0.85rem; }
+.nom-input.active { border-color: var(--accent); background: var(--accent-soft); }
+
 /* ---------- Mobil ---------- */
 @media (max-width: 560px) {
   body { padding: 16px 12px 48px; }

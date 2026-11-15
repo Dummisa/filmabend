@@ -70,19 +70,37 @@ export function personalEntries(list, movies, which) {
     .filter(Boolean);
 }
 
-/* Gruppenliste: alle Filme auf den Watchlists der Mitglieder,
+/* Welche Filme eine Person in einer Gruppe teilt.
+   Neu: list.share[gid] (pro Gruppe gewählt). Ältere Daten ohne
+   shareInit[gid]: dann gilt wie bisher die ganze persönliche Watchlist. */
+export function shareOf(list, gid) {
+  if (!list) return {};
+  if (list.shareInit && list.shareInit[gid]) return (list.share && list.share[gid]) || {};
+  return list.watch || {};
+}
+
+export function sharesIn(list, gid, id) {
+  return shareOf(list, gid)[mkey(id)] != null;
+}
+
+/* Gruppen, in denen eine Person einen Film teilt */
+export function groupsSharing(list, gids, id) {
+  return gids.filter(gid => sharesIn(list, gid, id));
+}
+
+/* Gruppenliste: alle Filme, die Mitglieder in dieser Gruppe teilen,
    mit "gewünscht von" und "gesehen von" (nur Mitglieder). */
-export function groupEntries(members, lists, movies) {
+export function groupEntries(members, lists, movies, gid) {
   const byId = new Map();
   members.forEach(uid => {
-    const watch = (lists[uid] && lists[uid].watch) || {};
-    Object.keys(watch).forEach(k => {
+    const share = shareOf(lists[uid], gid);
+    Object.keys(share).forEach(k => {
       const id = idFromKey(k);
       if (!movies[id]) return;
       let e = byId.get(id);
       if (!e) { e = { id, movie: movies[id], wantedBy: [], seenBy: [], addedAt: 0 }; byId.set(id, e); }
       e.wantedBy.push(uid);
-      e.addedAt = Math.max(e.addedAt, Number(watch[k]) || 0);
+      e.addedAt = Math.max(e.addedAt, Number(share[k]) || 0);
     });
   });
   byId.forEach(e => {
@@ -181,8 +199,15 @@ export function nominationsBy(vote, uid) {
   return Object.keys(vote.nominations || {}).filter(k => vote.nominations[k] === uid).map(idFromKey);
 }
 
+/* maxNominations 0 = unbegrenzt */
 export function canNominate(vote, uid) {
-  return vote.status === 'nominate' && nominationsBy(vote, uid).length < (vote.maxNominations || 1);
+  if (vote.status !== 'nominate') return false;
+  return !vote.maxNominations || nominationsBy(vote, uid).length < vote.maxNominations;
+}
+
+export function nominationLimitText(max) {
+  if (!max) return 'unbegrenzt Nominierungen pro Person';
+  return 'max. ' + max + ' Nominierung' + (max > 1 ? 'en' : '') + ' pro Person';
 }
 
 /* Stimmzettel bereinigen: nur Nominierte, keine Doppelten, je nach Methode begrenzt */

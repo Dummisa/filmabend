@@ -29,8 +29,6 @@ window.FILMABEND_CONFIG = {
   //    Konsole: https://console.firebase.google.com
   //    Projekteinstellungen → Meine Apps → SDK-Konfiguration → Werte
   //    hier eintragen. Gebraucht werden mindestens apiKey und projectId.
-  //    databaseURL ist nur noch für das einmalige Übernehmen der alten
-  //    Liste (erste Version der Seite) nötig – einfach drin lassen.
   // ---------------------------------------------------------------
   firebase: {
     apiKey: 'AIzaSyAUQMTcdeWFtnOvtyqq1Etg7iSNmhe9dr4',

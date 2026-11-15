@@ -18,8 +18,7 @@ import * as DB from './db.js';
 const LS = {
   user: 'filmabend:user',
   space: 'filmabend:space',
-  filtersOpen: 'filmabend:filtersOpen',
-  migrated: uid => 'filmabend:migrated:' + uid
+  filtersOpen: 'filmabend:filtersOpen'
 };
 
 function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
@@ -136,6 +135,8 @@ function closeDialog(result) {
   $('dialog').classList.add('hidden');
   $('dialog-body').innerHTML = '';
   if (dialogResolve) { const r = dialogResolve; dialogResolve = null; r(!!result); }
+  if (pickResolve) { const r = pickResolve; pickResolve = null; r(null); }
+  if (inboxOpen) { inboxSkipped.add(inboxOpen); inboxOpen = null; }   // weggeklickt: später nochmals fragen
 }
 
 function uiConfirm(text, okLabel, danger) {
@@ -358,107 +359,339 @@ function renderLogin() {
 /* ====================================================================
    Persönliche Liste – Aktionen
    ==================================================================== */
+/* ---------- Hilfen für Listen und Gruppen ---------- */
+const myGroupIds = () => Object.keys(S.groups).sort((a, b) => S.groups[a].name.localeCompare(S.groups[b].name, 'de'));
+const gName = gid => (S.groups[gid] && S.groups[gid].name) || 'Gruppe';
+const shareKey = (gid, id) => 'share.' + gid + '.' + L.mkey(id);
+const iShare = (gid, id) => L.sharesIn(myList(), gid, id);
+const inGroupList = (gid, id) => ((S.groups[gid] && S.groups[gid].members) || []).some(uid => L.sharesIn(S.lists[uid], gid, id));
+
+/* Felder, um die Gruppen-Freigabe einer Person anzulegen (ältere Daten:
+   bisher galt die ganze Watchlist als geteilt → wird übernommen). */
+function initFields(uid, gid, exceptId) {
+  const list = S.lists[uid];
+  if (!list || (list.shareInit && list.shareInit[gid])) return {};
+  const f = { ['shareInit.' + gid]: true };
+  const watch = list.watch || {};
+  const copy = {};
+  Object.keys(watch).forEach(k => { if (exceptId == null || k !== L.mkey(exceptId)) copy[k] = watch[k]; });
+  f['share.' + gid] = copy;
+  return f;
+}
+
+/* Freigabe eines Films in einer Gruppe setzen (value = Zeit) oder löschen (null),
+   inkl. Anlegen der Freigabe – ohne überlappende Feldpfade */
+function shareFields(uid, gid, id, value) {
+  const f = initFields(uid, gid);
+  if (Object.keys(f).length) {
+    const copy = f['share.' + gid];
+    if (value == null) delete copy[L.mkey(id)]; else copy[L.mkey(id)] = value;
+    return f;
+  }
+  return { [shareKey(gid, id)]: value };
+}
+
+/* Bestehende Gruppen ohne eigene Freigabe einmalig anlegen (Daten von vorher) */
+const initSkip = new Set();
+let initBusy = false, initPaused = 0;
+async function initMyShares() {
+  const l = S.lists[S.userId];
+  if (initBusy || initPaused || !l || !S.groupsLoaded) return;
+  const fields = {};
+  Object.keys(S.groups).forEach(gid => { if (!initSkip.has(gid)) Object.assign(fields, initFields(S.userId, gid)); });
+  if (!Object.keys(fields).length) return;
+  initBusy = true;
+  try { await DB.patchList(S.userId, fields); } catch (e) { onDbError(e); } finally { initBusy = false; }
+}
+
+/* Dialog mit Ankreuzfeldern. items: [{value, label, checked, disabled, note}]
+   → Promise: Liste der angekreuzten (aktiven) Werte, oder null bei Abbrechen */
+let pickResolve = null;
+function uiPick(html, items, okLabel, danger) {
+  if (dialogResolve) closeDialog(false);
+  if (pickResolve) { pickResolve(null); pickResolve = null; }
+  openDialog(html +
+    (items.length ? '<div class="picks">' + items.map(it =>
+      '<label class="pick' + (it.disabled ? ' disabled' : '') + '"><input type="checkbox" name="pick" value="' + esc(it.value) + '"' +
+        (it.checked ? ' checked' : '') + (it.disabled ? ' disabled' : '') + '><span>' + it.label +
+        (it.note ? ' <span class="muted small">' + esc(it.note) + '</span>' : '') + '</span></label>').join('') + '</div>' : '') +
+    (items.filter(it => !it.disabled).length > 2
+      ? '<div class="pick-all"><button type="button" class="linkbtn" data-action="pick-all">Alle</button> · <button type="button" class="linkbtn" data-action="pick-none">Keine</button></div>' : '') +
+    '<div class="dlg-actions">' +
+      '<button type="button" class="btn" data-action="pick-cancel">Abbrechen</button>' +
+      '<button type="button" class="btn ' + (danger ? 'danger-solid' : 'primary') + '" data-action="pick-ok">' + esc(okLabel) + '</button>' +
+    '</div>');
+  return new Promise(res => { pickResolve = res; });
+}
+
+function finishPick(ok) {
+  const vals = ok ? Array.from($('dialog-body').querySelectorAll('input[name="pick"]:checked:not(:disabled)')).map(i => i.value) : null;
+  const r = pickResolve;
+  pickResolve = null;
+  closeDialog(false);
+  if (r) r(vals);
+}
+
+async function ensureMovie(id) {
+  if (!S.movies[id] || !S.movies[id].fskChecked) {
+    const d = await TMDB.details(id);
+    await DB.saveMovie(d);
+    S.movies[d.id] = Object.assign({}, S.movies[d.id], d);
+  }
+}
+
+/* ---------- Hinzufügen: wohin? ---------- */
 async function addMovie(result) {
-  if (inMyWatch(result.id)) { toast('Ist schon auf deiner Liste.'); closeSearch(); return; }
+  const id = result.id;
+  const gids = myGroupIds();
+  const here = currentGroup() ? S.space : null;
+  closeSearch();
+  let targets;
+  if (!gids.length) {
+    if (inMyWatch(id)) { toast('Ist schon auf deiner Liste.'); return; }
+    targets = ['me'];
+  } else {
+    const items = [{ value: 'me', label: '🔒 Meine Liste <span class="muted small">(privat)</span>', checked: true,
+      disabled: inMyWatch(id), note: inMyWatch(id) ? '– schon drauf' : '' }]
+      .concat(gids.map(gid => ({
+        value: gid, label: '👥 ' + esc(gName(gid)),
+        checked: iShare(gid, id) || (here ? gid === here : true),
+        disabled: iShare(gid, id), note: iShare(gid, id) ? '– schon drin' : ''
+      })));
+    if (items.every(it => it.disabled)) { toast('„' + result.title + '“ ist schon überall drin.'); return; }
+    targets = await uiPick('<h3>„' + esc(result.title) + '“ hinzufügen</h3>' +
+      '<p class="muted">Auf welche Listen? In Gruppen sehen ihn alle Mitglieder.</p>', items, 'Hinzufügen');
+    if (!targets) return;
+    if (!targets.length) { toast('Nichts ausgewählt.'); return; }
+  }
+
   const input = $('search-input');
   input.disabled = true;
   $('search-hint').textContent = '„' + result.title + '“ wird hinzugefügt …';
   try {
-    if (!S.movies[result.id] || !S.movies[result.id].fskChecked) {
-      const d = await TMDB.details(result.id);
-      await DB.saveMovie(d);
-      S.movies[d.id] = Object.assign({}, S.movies[d.id], d);
-    }
-    await DB.updateList(S.userId, { watch: { [result.id]: true } });
-    toast('„' + result.title + '“ ist auf deiner Liste' + (currentGroup() ? ' – und damit auch in der Gruppe' : ''));
+    await ensureMovie(id);
+    const t = Date.now();
+    const fields = {};
+    if (targets.includes('me')) fields['watch.' + L.mkey(id)] = t;
+    targets.filter(x => x !== 'me').forEach(gid => Object.assign(fields, shareFields(S.userId, gid, id, t)));
+    await DB.patchList(S.userId, fields);
+    const names = targets.map(x => x === 'me' ? 'deine Liste' : '„' + gName(x) + '“');
+    toast('„' + result.title + '“ → ' + names.join(', '));
     input.value = '';
-    closeSearch();
-    if (S.space === 'me' && S.tab.me !== 'watch') { S.tab.me = 'watch'; render(); }
   } catch (e) {
     fail(e);
   } finally {
     input.disabled = false;
     $('search-hint').textContent = searchHint();
-    if (window.innerWidth > 700) input.focus();
   }
 }
 
-async function setSeen(id, seen) {
+/* ---------- Von der privaten Liste entfernen ---------- */
+async function removeFromPrivate(id) {
   const m = S.movies[id];
+  const shared = myGroupIds().filter(gid => iShare(gid, id));
+  let groups = [];
+  if (shared.length) {
+    groups = await uiPick('<h3>„' + esc(titleOf(m)) + '“ entfernen</h3>' +
+      '<p class="muted">Von deiner Liste entfernen. Auch aus diesen Gruppen nehmen?<br>' +
+      '<span class="small">(Wollen ihn dort andere auch sehen, bleibt er für sie drin.)</span></p>',
+      shared.map(gid => ({ value: gid, label: '👥 ' + esc(gName(gid)), checked: true })), 'Entfernen', true);
+    if (!groups) return;
+  } else if (!await uiConfirm('„<b>' + esc(titleOf(m)) + '</b>“ von deiner Liste entfernen?', 'Entfernen', true)) return;
   try {
-    if (seen) {
-      await DB.updateList(S.userId, { seen: { [id]: true }, watch: { [id]: false } });
-      toast('„' + titleOf(m) + '“ als gesehen markiert');
-    } else {
-      await DB.updateList(S.userId, { seen: { [id]: false } });
-      toast('„' + titleOf(m) + '“: nicht mehr als gesehen markiert');
-    }
-    if (S.pickedId === id) S.pickedId = null;
+    const fields = { ['watch.' + L.mkey(id)]: null };
+    groups.forEach(gid => Object.assign(fields, shareFields(S.userId, gid, id, null)));
+    await DB.patchList(S.userId, fields);
+    toast('„' + titleOf(m) + '“ entfernt' + (groups.length ? ' (auch aus ' + groups.length + (groups.length > 1 ? ' Gruppen)' : ' Gruppe)') : ''));
   } catch (e) { fail(e); }
+}
+
+async function removeFromSeen(id) {
+  if (!await uiConfirm('„<b>' + esc(titleOf(S.movies[id])) + '</b>“ aus deinen gesehenen Filmen entfernen?', 'Entfernen', true)) return;
+  try { await DB.patchList(S.userId, { ['seen.' + L.mkey(id)]: null }); toast('Entfernt'); }
+  catch (e) { fail(e); }
 }
 
 async function backToList(id) {
   try {
-    await DB.updateList(S.userId, { seen: { [id]: false }, watch: { [id]: true } });
+    await DB.patchList(S.userId, { ['seen.' + L.mkey(id)]: null, ['watch.' + L.mkey(id)]: Date.now() });
     toast('„' + titleOf(S.movies[id]) + '“ ist wieder auf deiner Liste');
   } catch (e) { fail(e); }
 }
 
-async function removeFromMy(id, which) {
-  const what = which === 'seen' ? 'aus deinen gesehenen Filmen' : 'von deiner Liste';
-  if (!await uiConfirm('„<b>' + esc(titleOf(S.movies[id])) + '</b>“ ' + what + ' entfernen?', 'Entfernen', true)) return;
+/* ---------- In einer Gruppe ---------- */
+async function toggleGroupWant(gid, id) {
+  const on = !iShare(gid, id);
   try {
-    await DB.updateList(S.userId, { [which]: { [id]: false } });
-    toast('„' + titleOf(S.movies[id]) + '“ entfernt');
+    await DB.patchList(S.userId, shareFields(S.userId, gid, id, on ? Date.now() : null));
+    toast(on ? 'Du willst ihn in „' + gName(gid) + '“ auch sehen' : 'Dein Wunsch in „' + gName(gid) + '“ ist entfernt');
   } catch (e) { fail(e); }
 }
 
-async function toggleMyWatch(id) {
+/* Film für alle aus einer Gruppe nehmen (private Listen bleiben) */
+async function removeFromGroup(gid, id) {
+  const g = S.groups[gid];
+  const wanters = (g.members || []).filter(uid => L.sharesIn(S.lists[uid], gid, id));
+  const others = wanters.filter(uid => uid !== S.userId);
+  const text = '„<b>' + esc(titleOf(S.movies[id])) + '</b>“ aus „' + esc(g.name) + '“ entfernen?' +
+    (others.length ? '<br><span class="muted">Gewünscht von ' + esc(namesList(wanters)) + ' – er verschwindet für alle aus dieser Gruppe.</span>' : '') +
+    '<br><span class="muted">Auf den privaten Listen bleibt er.</span>';
+  if (!await uiConfirm(text, 'Entfernen', true)) return;
   try {
-    if (inMyWatch(id)) {
-      await DB.updateList(S.userId, { watch: { [id]: false } });
-      toast('Von deiner Liste genommen');
-    } else {
-      await DB.updateList(S.userId, { watch: { [id]: true } });
-      toast('Auf deine Liste gesetzt');
+    await Promise.all(wanters.map(uid => DB.patchList(uid, shareFields(uid, gid, id, null))));
+    toast('Aus „' + g.name + '“ entfernt');
+  } catch (e) { fail(e); }
+}
+
+/* ---------- Gesehen ---------- */
+async function markSeen(id, contextGid) {
+  const m = S.movies[id];
+  const groups = myGroupIds().filter(gid => inGroupList(gid, id));
+  let together = [];
+  if (groups.length) {
+    together = await uiPick('<h3>„' + esc(titleOf(m)) + '“ gesehen</h3>' +
+      '<p class="muted">Mit welcher Gruppe hast du ihn geschaut? Dort wird er von der gemeinsamen Liste genommen. ' +
+      'Wer ihn auch auf seiner Liste hat, wird beim nächsten Öffnen gefragt, ob er ihn ebenfalls entfernen will.</p>',
+      groups.map(gid => ({ value: gid, label: '👥 ' + esc(gName(gid)), checked: gid === contextGid })), 'Als gesehen markieren');
+    if (!together) return;
+  }
+  try {
+    const t = Date.now();
+    const k = L.mkey(id);
+    // ich: gesehen, von privater Liste und allen meinen Freigaben weg
+    const mine = { ['seen.' + k]: t, ['watch.' + k]: null };
+    myGroupIds().forEach(gid => Object.assign(mine, shareFields(S.userId, gid, id, null)));
+    const perUser = new Map([[S.userId, mine]]);
+    let asked = 0;
+    // die anderen in den gewählten Gruppen
+    together.forEach(gid => {
+      (S.groups[gid].members || []).forEach(uid => {
+        if (uid === S.userId) return;
+        const l = S.lists[uid];
+        if (!l) return;
+        const shares = L.sharesIn(l, gid, id), priv = (l.watch || {})[k] != null;
+        if (!shares && !priv) return;
+        const f = perUser.get(uid) || {};
+        Object.assign(f, shareFields(uid, gid, id, null));
+        if ((l.seen || {})[k] == null && !Object.keys(f).some(x => x.startsWith('inbox.') && f[x].movieId === id)) {
+          f['inbox.n' + t.toString(36) + Math.random().toString(36).slice(2, 6)] = { movieId: id, by: S.userId, gid, at: t };
+          asked++;
+        }
+        perUser.set(uid, f);
+      });
+    });
+    await Promise.all(Array.from(perUser.entries()).map(([uid, f]) => DB.patchList(uid, f)));
+    if (S.pickedId === id) S.pickedId = null;
+    toast('„' + titleOf(m) + '“ als gesehen markiert' + (asked ? ' – ' + asked + (asked > 1 ? ' Personen werden' : ' Person wird') + ' gefragt' : ''));
+  } catch (e) { fail(e); }
+}
+
+async function unmarkSeen(id) {
+  try {
+    await DB.patchList(S.userId, { ['seen.' + L.mkey(id)]: null });
+    toast('Nicht mehr als gesehen markiert');
+  } catch (e) { fail(e); }
+}
+
+/* ---------- Rückfragen: "X hat Y gesehen – auch entfernen?" ---------- */
+let inboxOpen = null;
+const inboxSkipped = new Set();
+function checkInbox() {
+  if (inboxOpen || !S.userId || !S.moviesLoaded || !$('dialog').classList.contains('hidden')) return;
+  const l = S.lists[S.userId];
+  if (!l || !l.inbox) return;
+  const entries = Object.entries(l.inbox).sort((a, b) => (a[1].at || 0) - (b[1].at || 0));
+  for (const [key, n] of entries) {
+    if (inboxSkipped.has(key)) continue;
+    const id = n.movieId, k = L.mkey(id);
+    const m = S.movies[id];
+    if (!m) continue;
+    if ((l.seen || {})[k] != null) {
+      DB.patchList(S.userId, { ['inbox.' + key]: null }).catch(() => {});
+      continue;
     }
-  } catch (e) { fail(e); }
+    inboxOpen = key;
+    const priv = (l.watch || {})[k] != null;
+    const btn = (choice, label, primary) => '<button type="button" class="btn' + (primary ? ' primary' : '') + '" data-action="inbox" data-choice="' + choice +
+      '" data-key="' + esc(key) + '" data-id="' + id + '">' + label + '</button>';
+    openDialog(
+      '<h3>🎬 Schon gesehen?</h3>' +
+      '<p><b>' + esc(nameOf(n.by)) + '</b> hat „<b>' + esc(titleOf(m)) + '</b>“' +
+        (S.groups[n.gid] ? ' mit „' + esc(gName(n.gid)) + '“' : '') + ' geschaut. Er ist dort von der gemeinsamen Liste genommen.</p>' +
+      '<p class="muted">' + (priv ? 'Er ist auch auf deiner privaten Liste. Was soll damit passieren?' : 'Willst du ihn noch sehen?') + '</p>' +
+      '<div class="inbox-actions">' +
+        btn('seen', '👁 Ich war dabei – als gesehen markieren', true) +
+        (priv ? btn('keep', 'Behalten – ich will ihn noch sehen') + btn('remove', 'Von meiner Liste entfernen')
+              : btn('keep', 'Ja – auf meine private Liste setzen') + btn('remove', 'Nein, nicht nötig')) +
+      '</div>');
+    return;
+  }
 }
 
-/* Alte gemeinsame Liste (Realtime Database der ersten Version) übernehmen */
-function oldListUrl() {
-  const fb = (window.FILMABEND_CONFIG || {}).firebase || {};
-  return fb.databaseURL ? fb.databaseURL.replace(/\/+$/, '') + '/watchlist.json' : null;
-}
-
-async function importOldList() {
-  const url = oldListUrl();
-  if (!url) return;
-  closeDialog();
-  toast('Alte Liste wird geladen …');
+async function answerInbox(key, id, choice) {
+  inboxOpen = null;
+  closeDialog(false);
+  const k = L.mkey(id), t = Date.now();
+  const f = { ['inbox.' + key]: null };
+  if (choice === 'keep') {
+    if (!inMyWatch(id)) f['watch.' + k] = t;
+  } else {
+    f['watch.' + k] = null;
+    myGroupIds().forEach(gid => Object.assign(f, shareFields(S.userId, gid, id, null)));
+    if (choice === 'seen') f['seen.' + k] = t;
+  }
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error('Alte Liste nicht lesbar (HTTP ' + res.status + ')');
-    const data = (await res.json()) || {};
-    const old = Object.values(data).filter(m => m && m.id && (m.title || m.originalTitle));
-    if (!old.length) { toast('In der alten Liste sind keine Filme.'); lsSet(LS.migrated(S.userId), '1'); return; }
-    const keep = ['id', 'title', 'originalTitle', 'originalLanguage', 'titleEn', 'titleDe', 'year', 'releaseDate',
-      'runtime', 'genres', 'overview', 'posterPath', 'rating', 'trailerKey', 'trailerLanguage'];
-    const changes = { watch: {}, seen: {} };
-    for (const m of old) {
-      if (!S.movies[m.id]) {
-        const clean = {};
-        keep.forEach(k => { if (m[k] !== undefined && m[k] !== null) clean[k] = m[k]; });
-        clean.title = clean.title || clean.originalTitle;
-        clean.fskChecked = false;
-        await DB.saveMovie(clean);
-      }
-      if (m.watched) changes.seen[m.id] = true; else changes.watch[m.id] = true;
-    }
-    await DB.updateList(S.userId, changes);
-    lsSet(LS.migrated(S.userId), '1');
-    toast(old.length + ' Filme aus der alten Liste übernommen');
+    await DB.patchList(S.userId, f);
+    toast(choice === 'keep' ? 'Bleibt auf deiner Liste' : choice === 'seen' ? 'Als gesehen markiert' : 'Entfernt');
   } catch (e) { fail(e); }
+  setTimeout(checkInbox, 400);
+}
+
+/* ---------- Beim Beitreten: Gruppenliste auf die eigene Liste übernehmen? ---------- */
+async function askTakeGroupList(gid, name) {
+  // warten, bis die Listen der Mitglieder geladen sind (max. ~4 s)
+  for (let i = 0; i < 40; i++) {
+    const g = S.groups[gid];
+    if (g && (g.members || []).every(uid => S.lists[uid])) break;
+    await new Promise(r => setTimeout(r, 100));
+  }
+  const g = S.groups[gid];
+  if (!g) return;
+  const ids = L.groupEntries(g.members || [], S.lists, S.movies, gid)
+    .map(e => e.id).filter(id => !inMyWatch(id) && !inMySeen(id));
+  if (!ids.length) return;
+  const ok = await uiConfirm('In „' + esc(name || gName(gid)) + '“ sind <b>' + ids.length + (ids.length === 1 ? ' Film' : ' Filme') +
+    '</b>, die nicht auf deiner privaten Liste sind. Alle auf deine Liste übernehmen?' +
+    '<br><span class="muted">Oder später einzeln mit „＋ Meine Liste“ auf den Filmkarten.</span>', 'Alle übernehmen');
+  if (!ok) return;
+  const t = Date.now();
+  const f = {};
+  ids.forEach(id => { f['watch.' + L.mkey(id)] = t; });
+  try { await DB.patchList(S.userId, f); toast(ids.length + ' Filme auf deine Liste übernommen'); }
+  catch (e) { fail(e); }
+}
+
+async function addToPrivate(id) {
+  try {
+    await DB.patchList(S.userId, { ['watch.' + L.mkey(id)]: Date.now() });
+    toast('„' + titleOf(S.movies[id]) + '“ ist jetzt auf deiner Liste');
+  } catch (e) { fail(e); }
+}
+
+/* ---------- Beim Beitreten/Erstellen: Watchlist teilen? ---------- */
+async function askShareAll(gid, name) {
+  initSkip.add(gid);
+  const watch = myList().watch || {};
+  const n = Object.keys(watch).length;
+  let share = {};
+  if (n) {
+    const ok = await uiConfirm('Deine Watchlist (<b>' + n + (n === 1 ? ' Film' : ' Filme') + '</b>) auch in „' + esc(name || gName(gid)) + '“ teilen?' +
+      '<br><span class="muted">Einzelne Filme kannst du später jederzeit hinzufügen oder entfernen.</span>', 'Alle teilen');
+    if (ok) share = Object.assign({}, watch);
+  }
+  try { await DB.patchList(S.userId, { ['shareInit.' + gid]: true, ['share.' + gid]: share }); }
+  catch (e) { fail(e); }
+  initSkip.delete(gid);
 }
 
 /* ====================================================================
@@ -467,29 +700,37 @@ async function importOldList() {
 async function createGroup(name) {
   name = name.trim();
   if (!name) { toast('Bitte einen Namen für die Gruppe eingeben.', true); return; }
+  initPaused++;
   try {
     const g = await DB.createGroup(name, S.userId, L.makeCode);
+    initSkip.add(g.id);
     closeDialog();
     S.expectGroup = g.id;
     S.space = g.id; lsSet(LS.space, g.id);
     S.tab.group = 'list';
     S.filters = L.emptyFilters();
-    toast('Gruppe „' + name + '“ erstellt – lade jetzt Leute ein');
+    toast('Gruppe „' + name + '“ erstellt');
     render();
-    setTimeout(() => openInvite(g.id, name, g.code), 300);
+    await askShareAll(g.id, name);
+    openInvite(g.id, name, g.code);
   } catch (e) { fail(e); }
+  finally { initPaused--; }
 }
 
 async function joinByCode(code, silentIfMember) {
   code = L.normalizeCode(code);
   if (code.length !== 6) { toast('Der Code hat 6 Zeichen.', true); return; }
+  initPaused++;
   try {
     const g = await DB.findGroupByCode(code);
     if (!g) { toast('Keine Gruppe mit dem Code ' + code + ' gefunden.', true); return; }
+    let joined = false;
     if ((g.members || []).includes(S.userId)) {
       if (!silentIfMember) toast('Du bist schon in „' + g.name + '“');
     } else {
+      initSkip.add(g.id);
       await DB.joinGroup(g.id, S.userId);
+      joined = true;
       toast('Willkommen in „' + g.name + '“!');
     }
     closeDialog();
@@ -498,7 +739,9 @@ async function joinByCode(code, silentIfMember) {
     S.tab.group = 'list';
     S.filters = L.emptyFilters();
     render();
+    if (joined) { await askShareAll(g.id, g.name); await askTakeGroupList(g.id, g.name); }
   } catch (e) { fail(e); }
+  finally { initPaused--; }
 }
 
 async function handlePendingJoin() {
@@ -576,15 +819,10 @@ function openProfile() {
   const l = myList();
   const nWatch = Object.keys(l.watch).length, nSeen = Object.keys(l.seen).length;
   const nGroups = Object.keys(S.groups).length;
-  const canImport = oldListUrl() && !lsGet(LS.migrated(S.userId));
   openDialog(
     '<h3>👤 ' + esc(nameOf(S.userId)) + '</h3>' +
     '<p class="muted">' + nWatch + ' auf deiner Liste · ' + nSeen + ' gesehen · ' +
       nGroups + (nGroups === 1 ? ' Gruppe' : ' Gruppen') + '</p>' +
-    (canImport
-      ? '<div class="dlg-box"><b>Alte gemeinsame Liste</b><br><span class="muted">Die Filme aus der ersten Version der Seite auf deine persönliche Liste übernehmen (gesehene als gesehen).</span>' +
-        '<div class="dlg-actions left"><button type="button" class="btn primary" data-action="import-old">Übernehmen</button></div></div>'
-      : '') +
     '<div class="dlg-actions">' +
       '<button type="button" class="btn" data-action="logout">Profil wechseln</button>' +
       '<button type="button" class="btn primary" data-action="dlg-cancel">Schliessen</button>' +
@@ -627,7 +865,7 @@ function voteNeedsMe(v) {
 function currentGroupEntries() {
   const g = currentGroup();
   if (!g) return [];
-  return L.groupEntries(g.members || [], S.lists, S.movies);
+  return L.groupEntries(g.members || [], S.lists, S.movies, S.space);
 }
 
 function newVoteForm() {
@@ -760,6 +998,9 @@ function render() {
   $('view-list').classList.toggle('hidden', isVote);
   $('view-vote').classList.toggle('hidden', !isVote);
   if (isVote) renderVoteView(); else renderListView();
+
+  initMyShares();
+  setTimeout(checkInbox, 0);
 }
 
 function renderSpaces() {
@@ -895,7 +1136,7 @@ function renderListView() {
   const g = currentGroup();
   const isGroup = !!g;
   document.body.classList.toggle('in-group', isGroup);
-  $('add-title').textContent = isGroup ? 'Film zu deiner Liste hinzufügen (erscheint hier in der Gruppe)' : 'Film zu deiner Liste hinzufügen';
+  $('add-title').textContent = 'Film hinzufügen';
   renderSort(isGroup);
 
   const entries = currentEntries();
@@ -967,12 +1208,15 @@ function renderCard(e, mode) {
         '<span class="person' + (uid === S.userId ? ' me' : '') + '">' + esc(nameOf(uid)) + '</span>').join('') + '</div>' +
       '<div class="people seen"><span class="pl">Gesehen:</span> ' + (e.seenBy.length
         ? e.seenBy.map(uid => '<span class="person seen' + (uid === S.userId ? ' me' : '') + '">👁 ' + esc(nameOf(uid)) + '</span>').join('')
-        : '<span class="nobody">noch niemand</span>') + '</div>';
+        : '<span class="nobody">noch niemand</span>') + '</div>' +
+      (inMyWatch(e.id) ? '<div class="people"><span class="pl">🔒 auf deiner privaten Liste</span></div>' : '');
     actions = trailerBtn +
-      '<button type="button" class="btn' + (mine ? ' on' : '') + '" data-action="toggle-mine" data-id="' + e.id + '" title="' +
-        (mine ? 'Von deiner Liste nehmen' : 'Auf deine Liste setzen') + '">' + (mine ? '★ Meine Liste' : '☆ Meine Liste') + '</button>' +
+      '<button type="button" class="btn' + (mine ? ' on' : '') + '" data-action="toggle-want" data-id="' + e.id + '" title="' +
+        (mine ? 'Deinen Wunsch in dieser Gruppe zurücknehmen' : 'Du willst ihn in dieser Gruppe auch sehen') + '">' + (mine ? '🙋 Ich auch ✓' : '🙋 Ich auch') + '</button>' +
+      (inMyWatch(e.id) ? '' : '<button type="button" class="btn" data-action="add-private" data-id="' + e.id + '" title="Auf deine private Liste setzen">＋ Meine Liste</button>') +
       '<button type="button" class="btn' + (iSaw ? ' on' : '') + '" data-action="toggle-seen" data-id="' + e.id + '">' +
-        (iSaw ? '👁 Gesehen ✓' : '👁 Gesehen?') + '</button>';
+        (iSaw ? '👁 Gesehen ✓' : '👁 Gesehen?') + '</button>' +
+      '<button type="button" class="btn danger" data-action="remove-group" data-id="' + e.id + '" title="Aus dieser Gruppe entfernen" aria-label="Aus dieser Gruppe entfernen">✕</button>';
   }
 
   return '' +
@@ -1063,7 +1307,7 @@ function renderVoteCard(v, g, compact) {
     '<div class="vhead">' +
       '<div><h3>' + esc(v.title) + '</h3>' +
         '<div class="muted small">' + esc(method.label) + ' · gestartet von ' + esc(nameOf(v.createdBy)) + ' am ' + fmtDate(v.createdAt) +
-        (v.status !== 'closed' ? ' · max. ' + v.maxNominations + ' Nominierung' + (v.maxNominations > 1 ? 'en' : '') + ' pro Person' : '') + '</div>' +
+        (v.status !== 'closed' ? ' · ' + L.nominationLimitText(v.maxNominations) : '') + '</div>' +
         (conds.length ? '<div class="conds">' + conds.map(c => '<span class="cond">' + esc(c) + '</span>').join('') + '</div>' : '') +
       '</div>' +
       (compact ? '' : '<div class="phases">' + phases.map((p, i) =>
@@ -1086,7 +1330,7 @@ function renderVoteCard(v, g, compact) {
 }
 
 function renderNominate(v, g) {
-  const entries = L.groupEntries(g.members || [], S.lists, S.movies);
+  const entries = L.groupEntries(g.members || [], S.lists, S.movies, S.space);
   const nominated = L.nominatedIds(v);
   const mine = L.nominationsBy(v, S.userId);
   const can = L.canNominate(v, S.userId);
@@ -1119,7 +1363,7 @@ function renderNominate(v, g) {
 
   return '' +
     '<div class="vsec"><div class="vsec-title">Nominiert <span class="count">' + nominated.length + '</span>' +
-      '<span class="muted small"> · du: ' + mine.length + ' / ' + v.maxNominations + '</span></div>' +
+      '<span class="muted small"> · du: ' + mine.length + (v.maxNominations ? ' / ' + v.maxNominations : '') + '</span></div>' +
       (nomRows || '<p class="muted small">Noch nichts nominiert.</p>') + '</div>' +
     '<div class="vsec"><div class="vsec-title">Passende Filme aus der Liste <span class="count">' + candidates.length + '</span>' +
       (excluded ? '<span class="muted small"> · ' + excluded + ' passen nicht zu den Bedingungen</span>' : '') + '</div>' +
@@ -1213,7 +1457,9 @@ function renderVoteForm() {
         '<b>' + esc(mth.label) + '</b><span>' + esc(mth.hint) + '</span></button>').join('') + '</div>' +
 
     '<div class="fl">Nominierungen pro Person</div>' +
-    '<div class="chips">' + [1, 2, 3, 4, 5].map(n => opt('maxNominations', n, String(n), f.maxNominations === n)).join('') + '</div>' +
+    '<div class="chips nom-chips">' + [1, 2, 3, 4, 5].map(n => opt('maxNominations', n, String(n), f.maxNominations === n)).join('') +
+      '<input type="number" id="form-maxnom" class="nom-input' + (f.maxNominations > 5 ? ' active' : '') + '" min="1" max="100" inputmode="numeric" placeholder="andere" aria-label="Andere Anzahl" value="' + (f.maxNominations > 5 ? f.maxNominations : '') + '">' +
+      opt('maxNominations', 0, '∞ Unbegrenzt', f.maxNominations === 0) + '</div>' +
 
     '<h3 class="fsub">Bedingungen <span class="muted small">(optional)</span></h3>' +
     '<div class="fl">Länge höchstens</div>' +
@@ -1286,8 +1532,10 @@ function renderSearchResults() {
   } else {
     box.innerHTML = searchResults.map((r, i) => {
       const poster = TMDB.posterUrl(r.posterPath, 'w92');
-      const onList = inMyWatch(r.id), seen = inMySeen(r.id);
-      const tag = onList ? '✓ auf deiner Liste' : seen ? '👁 gesehen · ' + (r.year || '') : (r.year || '');
+      const g = currentGroup();
+      const inGroup = g && inGroupList(S.space, r.id);
+      const onList = g ? inGroup : inMyWatch(r.id), seen = inMySeen(r.id);
+      const tag = inGroup ? '✓ in der Gruppe' : onList ? '✓ auf deiner Liste' : seen ? '👁 gesehen · ' + (r.year || '') : (r.year || '');
       return '<button type="button" class="result' + (i === searchIndex ? ' hover' : '') + (onList ? ' onlist' : '') + '" data-index="' + i + '">' +
         (poster ? '<img src="' + esc(poster) + '" alt="">' : '<span class="noposter">🎬</span>') +
         '<span class="rt"><strong>' + esc(r.title) + '</strong>' + (r.subtitle ? ' <em>' + esc(r.subtitle) + '</em>' : '') + '</span>' +
@@ -1410,6 +1658,16 @@ function initStaticUi() {
   // Titel im Abstimmungsformular mitschreiben
   document.addEventListener('input', e => {
     if (e.target.id === 'form-title' && S.form) S.form.title = e.target.value;
+    if (e.target.id === 'form-maxnom' && S.form) {
+      const n = Math.round(Number(e.target.value));
+      if (n >= 1 && n <= 100) {
+        S.form.maxNominations = n;
+        // nur Chips umschalten, Eingabefeld nicht neu zeichnen (Fokus bleibt)
+        document.querySelectorAll('.nom-chips .chip').forEach(c => c.classList.remove('active'));
+        e.target.classList.add('active');
+        if (n <= 5) { const c = document.querySelector('.nom-chips .chip[data-value="' + n + '"]'); if (c) { c.classList.add('active'); e.target.classList.remove('active'); } }
+      }
+    }
   });
 
   document.addEventListener('click', onClick);
@@ -1448,7 +1706,6 @@ function onClick(ev) {
     case 'login-cancel': S.loginPending = null; renderLogin(); break;
     case 'open-profile': openProfile(); break;
     case 'logout': closeDialog(); logout(); break;
-    case 'import-old': importOldList(); break;
 
     case 'space': switchSpace(el.dataset.space); break;
     case 'subtab':
@@ -1472,12 +1729,20 @@ function onClick(ev) {
     case 'leave-group': leaveGroup(gid); break;
 
     case 'trailer': ev.stopPropagation(); if (S.movies[id]) openTrailer(S.movies[id]); break;
-    case 'seen': setSeen(id, true); break;
+    case 'seen': markSeen(id, null); break;
     case 'back-to-list': backToList(id); break;
-    case 'remove-watch': removeFromMy(id, 'watch'); break;
-    case 'remove-seen': removeFromMy(id, 'seen'); break;
-    case 'toggle-mine': toggleMyWatch(id); break;
-    case 'toggle-seen': setSeen(id, !inMySeen(id)); break;
+    case 'remove-watch': removeFromPrivate(id); break;
+    case 'remove-seen': removeFromSeen(id); break;
+    case 'toggle-want': toggleGroupWant(gid, id); break;
+    case 'remove-group': removeFromGroup(gid, id); break;
+    case 'add-private': addToPrivate(id); break;
+    case 'toggle-seen': if (inMySeen(id)) unmarkSeen(id); else markSeen(id, currentGroup() ? gid : null); break;
+    case 'pick-ok': finishPick(true); break;
+    case 'pick-cancel': finishPick(false); break;
+    case 'pick-all': case 'pick-none':
+      $('dialog-body').querySelectorAll('input[name="pick"]:not(:disabled)').forEach(i => { i.checked = a === 'pick-all'; });
+      break;
+    case 'inbox': answerInbox(el.dataset.key, id, el.dataset.choice); break;
 
     case 'new-vote':
       S.form = newVoteForm();

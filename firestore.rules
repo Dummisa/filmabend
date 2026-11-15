@@ -26,9 +26,12 @@ service cloud.firestore {
       allow read: if signedIn();
       allow create, update: if signedIn()
         && exists(/databases/$(database)/documents/users/$(userId))
-        && data().keys().hasOnly(['watch', 'seen', 'updatedAt'])
+        && data().keys().hasOnly(['watch', 'seen', 'share', 'shareInit', 'inbox', 'updatedAt'])
         && data().watch is map && data().watch.size() <= 3000
-        && data().seen is map && data().seen.size() <= 5000;
+        && data().seen is map && data().seen.size() <= 5000
+        && (!('share' in data()) || (data().share is map && data().share.size() <= 50))
+        && (!('shareInit' in data()) || data().shareInit is map)
+        && (!('inbox' in data()) || (data().inbox is map && data().inbox.size() <= 300));
       allow delete: if false;
     }
 
@@ -58,7 +61,7 @@ service cloud.firestore {
         && data().members is list && data().members.size() <= 30;
       allow delete: if false;
 
-      // Abstimmungen einer Gruppe
+      // Abstimmungen einer Gruppe (maxNominations 0 = unbegrenzt)
       match /votes/{voteId} {
         allow read: if signedIn();
         allow create, update: if signedIn()
@@ -67,7 +70,7 @@ service cloud.firestore {
           && str(data().title, 60)
           && data().status in ['nominate', 'vote', 'closed']
           && data().method in ['approval', 'single', 'ranked']
-          && data().maxNominations is int && data().maxNominations >= 1 && data().maxNominations <= 10
+          && data().maxNominations is int && data().maxNominations >= 0 && data().maxNominations <= 100
           && data().nominations is map && data().nominations.size() <= 100
           && data().ballots is map && data().ballots.size() <= 30;
         allow delete: if signedIn();

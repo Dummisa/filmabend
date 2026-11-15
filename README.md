@@ -75,8 +75,11 @@ es kommen nur zwei Dienste dazu.
 2. Alles im Textfeld löschen, den kompletten Inhalt der Datei
    **`firestore.rules`** (aus diesem Projekt) einfügen → **Veröffentlichen**.
 
-Fertig. Die alte *Realtime Database* bleibt unverändert bestehen, bis du die
-alte Liste übernommen hast (siehe unten).
+**Wichtig bei Updates:** Ändert sich `firestore.rules`, die Regeln immer
+*zuerst* neu veröffentlichen und erst dann die Website pushen.
+
+Fertig. Die alte *Realtime Database* der ersten Version wird nicht mehr
+gebraucht und kann in der Firebase-Konsole gelöscht werden.
 
 ### Schritt 3: Lokal ausprobieren (Positron)
 
@@ -104,41 +107,49 @@ Nach ein bis zwei Minuten ist die neue Version unter
 **<https://dummisa.github.io/filmabend/>** online (GitHub Actions →
 „Deploy to GitHub Pages“).
 
-### Schritt 5: Alte Liste übernehmen (einmalig)
-
-Auf der Seite mit deinem Namen anmelden → oben rechts auf **👤 Name** →
-**Alte gemeinsame Liste → Übernehmen**. Alle Filme der ersten Version landen
-auf deiner persönlichen Liste (gesehene als gesehen) und damit in jeder
-Gruppe, in der du bist. Danach kannst du die Realtime Database in der
-Firebase-Konsole löschen, wenn du willst.
-
 ## Bedienung
 
 **Anmelden:** Namen eingeben. Gibt es den Namen schon, bist du angemeldet;
 sonst fragt die Seite, ob ein neues Profil angelegt werden soll. Das Gerät
 merkt sich das. Profil wechseln: **👤 Name → Profil wechseln**.
 
-**Meine Liste:** Tabs *Watchlist* und *Gesehen*.
-- Film hinzufügen: Titel eintippen (deutsch, englisch oder original), Treffer
-  antippen. Genre, Länge, Jahr, FSK, Poster und Trailer kommen von TMDB.
-- **✓ Gesehen** verschiebt einen Film zu *Gesehen*; dort holt
-  **↩ Nochmals schauen** ihn zurück. **🗑** entfernt ihn.
+**Meine Liste:** Tabs *Watchlist* (privat) und *Gesehen*.
+
+**Film hinzufügen:** Titel eintippen, Treffer antippen. Bist du in Gruppen,
+fragt die Seite, **auf welche Listen** er soll: deine private Liste und/oder
+einzelne Gruppen. Aus *Meine Liste* heraus ist alles vorausgewählt, in einer
+Gruppe die private Liste und diese Gruppe. So kann ein Film z.B. nur in der
+Gruppe mit den Leuten landen, mit denen du ihn schauen willst.
+
+**Entfernen von der privaten Liste (🗑):** Die Seite fragt, aus welchen
+Gruppen er ebenfalls verschwinden soll (wollen ihn dort andere auch sehen,
+bleibt er für sie drin).
 
 **Gruppen:** oben **＋ Gruppe** → neue Gruppe erstellen oder mit Code beitreten.
-- **📨 Einladen** zeigt Code und Link (auf dem Handy direkt teilbar). Wer den
-  Link öffnet, meldet sich an und wird gefragt, ob er beitreten will.
-- *Gemeinsame Liste* = alle Filme auf den Watchlists der Mitglieder. Jede
-  Karte zeigt **Will sehen:** und **Gesehen:**. Mit **☆/★ Meine Liste** und
-  **👁 Gesehen?** änderst du deinen eigenen Stand direkt hier.
-- Filter *Nicht gesehen von* (Personen antippen, z.B. alle, die heute dabei
-  sind) und *Gesehen von höchstens* (niemandem / 1 Person / 2 Personen …).
-  Sortierung zusätzlich nach *Meistgewünscht*.
-- **Verlassen** nimmt dich aus der Gruppe; deine Liste bleibt erhalten.
+Beim Erstellen/Beitreten fragt die Seite, ob deine ganze Watchlist in die
+Gruppe soll – oder du fügst später einzelne Filme hinzu. Beim Beitreten fragt
+sie zusätzlich, ob die Filme der Gruppe auf deine private Liste sollen; sonst
+holst du dir einzelne mit **＋ Meine Liste** auf der Filmkarte.
+- **📨 Einladen** zeigt Code und Link (auf dem Handy direkt teilbar).
+- Jede Karte zeigt **Will sehen:** und **Gesehen:**.
+  - **🙋 Ich auch** – du willst ihn in dieser Gruppe auch sehen (nochmals tippen nimmt es zurück).
+  - **＋ Meine Liste** – setzt ihn auf deine private Liste (erscheint nur, wenn er noch nicht drauf ist).
+  - **✕** – nimmt den Film für alle aus dieser Gruppe; private Listen bleiben unverändert.
+- Filter *Nicht gesehen von* und *Gesehen von höchstens*; Sortierung *Meistgewünscht*.
+
+**Gesehen markieren:** Ist der Film in Gruppenlisten, fragt die Seite,
+**mit welcher Gruppe** du ihn geschaut hast (in einer Gruppe ist diese
+vorausgewählt; nichts ankreuzen = allein geschaut). In den gewählten Gruppen
+wird er von der gemeinsamen Liste genommen. Alle anderen dort, die ihn
+wollten, werden beim nächsten Öffnen der Seite gefragt:
+*„Ich war dabei“* (→ gesehen) · *behalten* (→ bleibt bzw. kommt auf die private
+Liste, nur nicht mehr in der Gruppe – z.B. wenn jemand nicht dabei war) ·
+*entfernen*.
 
 **Abstimmung** (Tab in der Gruppe; 🗳 an der Gruppe zeigt, dass eine läuft,
 🔴 dass du noch etwas tun musst):
 1. **Neue Abstimmung starten:** Titel, Abstimmungsart, Nominierungen pro
-   Person (1–5) und optional Bedingungen:
+   Person (1–5, eine eigene Zahl oder **∞ Unbegrenzt**) und optional Bedingungen:
    Länge höchstens · FSK höchstens · Genres · *schon gesehen*: egal / von
    niemandem / von höchstens N Personen / nicht von bestimmten Leuten.
    Die Seite zeigt sofort, wie viele Filme der Liste passen.
