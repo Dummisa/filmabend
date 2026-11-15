@@ -1,0 +1,77 @@
+rules_version = '2';
+
+// Filmabend – Firestore-Regeln
+// In der Firebase-Konsole unter Firestore Database → Regeln einfügen und veröffentlichen.
+// Wie beim Essensplan: Jedes Gerät meldet sich anonym an, Profile laufen über den Namen.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function str(v, maxLen) { return v is string && v.size() <= maxLen; }
+    function data() { return request.resource.data; }
+
+    // Profile: alle angemeldeten Geräte dürfen lesen (Anmeldung per Name)
+    match /users/{userId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn()
+        && data().keys().hasOnly(['name', 'nameLower', 'createdAt'])
+        && str(data().name, 30) && data().name.size() > 0
+        && data().nameLower == data().name.lower();
+      allow delete: if false;
+    }
+
+    // Persönliche Watchlist + gesehene Filme (ein Dokument pro Person)
+    match /lists/{userId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn()
+        && exists(/databases/$(database)/documents/users/$(userId))
+        && data().keys().hasOnly(['watch', 'seen', 'updatedAt'])
+        && data().watch is map && data().watch.size() <= 3000
+        && data().seen is map && data().seen.size() <= 5000;
+      allow delete: if false;
+    }
+
+    // Filmdaten von TMDB (gemeinsamer Zwischenspeicher)
+    match /movies/{movieId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn()
+        && movieId.matches('^[0-9]{1,10}$')
+        && data().keys().size() <= 30
+        && str(data().title, 300)
+        && (!('overview' in data()) || str(data().overview, 5000));
+      allow delete: if false;
+    }
+
+    // Gruppen (geteilte Listen)
+    match /groups/{groupId} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && data().keys().hasOnly(['name', 'code', 'members', 'createdBy', 'createdAt'])
+        && str(data().name, 40) && data().name.size() > 0
+        && data().code is string && data().code.matches('^[A-Z0-9]{6}$')
+        && data().members is list && data().members.size() <= 30;
+      allow update: if signedIn()
+        && data().keys().hasOnly(['name', 'code', 'members', 'createdBy', 'createdAt'])
+        && data().code == resource.data.code
+        && str(data().name, 40) && data().name.size() > 0
+        && data().members is list && data().members.size() <= 30;
+      allow delete: if false;
+
+      // Abstimmungen einer Gruppe
+      match /votes/{voteId} {
+        allow read: if signedIn();
+        allow create, update: if signedIn()
+          && data().keys().hasOnly(['title', 'createdBy', 'createdAt', 'status', 'method', 'maxNominations',
+                                    'conditions', 'nominations', 'ballots', 'result', 'closedAt'])
+          && str(data().title, 60)
+          && data().status in ['nominate', 'vote', 'closed']
+          && data().method in ['approval', 'single', 'ranked']
+          && data().maxNominations is int && data().maxNominations >= 1 && data().maxNominations <= 10
+          && data().nominations is map && data().nominations.size() <= 100
+          && data().ballots is map && data().ballots.size() <= 30;
+        allow delete: if signedIn();
+      }
+    }
+  }
+}

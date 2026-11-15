@@ -25,15 +25,12 @@ window.FILMABEND_CONFIG = {
   language: 'de-DE',
 
   // ---------------------------------------------------------------
-  // 2) Firebase Realtime Database  (geteilte Watchlist)
+  // 2) Firebase  (Profile, Listen, Gruppen, Abstimmungen – Firestore)
   //    Konsole: https://console.firebase.google.com
   //    Projekteinstellungen → Meine Apps → SDK-Konfiguration → Werte
-  //    hier eintragen. WICHTIG: databaseURL muss gesetzt sein – sie
-  //    steht oben auf der Seite "Realtime Database" und sieht z.B. so aus:
-  //    https://filmabend-xxxxx-default-rtdb.europe-west1.firebasedatabase.app
-  //
-  //    Solange hier nichts eingetragen ist, läuft die Seite im lokalen
-  //    Modus (Liste nur im eigenen Browser gespeichert).
+  //    hier eintragen. Gebraucht werden mindestens apiKey und projectId.
+  //    databaseURL ist nur noch für das einmalige Übernehmen der alten
+  //    Liste (erste Version der Seite) nötig – einfach drin lassen.
   // ---------------------------------------------------------------
   firebase: {
     apiKey: 'AIzaSyAUQMTcdeWFtnOvtyqq1Etg7iSNmhe9dr4',

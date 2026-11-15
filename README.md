@@ -1,14 +1,21 @@
-# 🎬 Filmabend – gemeinsame Watchlist
+# 🎬 Filmabend – Watchlists & Abstimmungen
 
-Statische Website (GitHub Pages) für den Filmabend: Jeder kann Filme auf
-die Watchlist setzen, die Liste lässt sich nach **Genre, Länge und
-Erscheinungsjahr** filtern, und ein Klick auf einen Film öffnet den
-**Trailer**. Filminfos kommen automatisch von TMDB (The Movie Database),
-die Liste selbst liegt in einer Firebase Realtime Database – damit sehen
-alle dieselbe Liste, live, auf jedem Gerät.
+Statische Website (GitHub Pages) für den Filmabend:
 
-Aufbau wie beim TOTO-Dashboard: Website im Ordner `docs/`, Deployment über
-GitHub Actions, `run.py` zum lokalen Ausprobieren.
+- **Profile** wie beim Essensplan: Anmeldung nur mit dem Namen, kein Passwort.
+- **Persönliche Watchlist** und **gesehene Filme** für jede Person.
+- **Gruppen** (geteilte Listen): enthalten automatisch alle Filme auf den
+  persönlichen Listen der Mitglieder – mit *wer will ihn sehen* und *wer hat
+  ihn schon gesehen*. Beitreten per Einladungslink oder 6-stelligem Code.
+- **Filter** nach Genre, Länge, Jahrzehnt – in Gruppen zusätzlich
+  *nicht gesehen von …* und *gesehen von höchstens N Personen*.
+- **Abstimmungen** pro Gruppe: Bedingungen (Länge, FSK, Genre, schon gesehen),
+  Nominieren, Abstimmen (Zustimmung, eine Stimme oder Rangfolge), Ergebnis.
+- Klick auf einen Film öffnet den **Trailer** (bevorzugt in Originalsprache).
+
+Filmdaten kommen von TMDB, alles andere liegt in **Firebase Firestore** und
+ist auf allen Geräten live synchron. Kein Backend, kein Blaze-Plan nötig –
+der kostenlose Spark-Plan reicht.
 
 ## Projektstruktur
 
@@ -16,98 +23,65 @@ GitHub Actions, `run.py` zum lokalen Ausprobieren.
 filmabend/
 ├── docs/                      # die Website – wird von GitHub Pages ausgeliefert
 │   ├── index.html             # Seitenaufbau
-│   ├── style.css              # Design (dunkles Dashboard wie TOTO/Poker)
-│   ├── app.js                 # Oberfläche, Filter, Sortierung, Zufallsfilm
-│   ├── tmdb.js                # Filmsuche, Details und Trailer von TMDB
-│   ├── store.js               # Speicherung: Firebase (geteilt) oder localStorage
-│   ├── config.js              # ★ HIER kommen die Schlüssel rein ★
+│   ├── style.css              # Design
+│   ├── app.js                 # Oberfläche (Listen, Gruppen, Abstimmungen)
+│   ├── logic.js               # Filter, Gruppenliste, Bedingungen, Auszählung
+│   ├── db.js                  # Firestore: Profile, Listen, Gruppen, Abstimmungen
+│   ├── tmdb.js                # Filmsuche, Details, FSK und Trailer von TMDB
+│   ├── config.js              # ★ Schlüssel (TMDB + Firebase) ★
 │   └── .nojekyll
+├── firestore.rules            # ★ Datenbank-Regeln – in die Firebase-Konsole kopieren ★
 ├── .github/workflows/
 │   └── deploy.yml             # veröffentlicht docs/ auf GitHub Pages
 ├── run.py                     # lokale Vorschau (python run.py)
-├── .gitignore
 └── README.md
 ```
 
-## Einrichtung – was du noch eintragen musst
+## Einrichtung
 
-Alle Schlüssel gehören in **`docs/config.js`**. Die Seite läuft auch ohne
-sie (dann ohne Filmsuche bzw. nur mit lokaler Liste) und sagt dir oben im
-Banner, was noch fehlt.
+### Schritt 1: TMDB-API-Key — ✅ schon erledigt
 
-### Schritt 1: TMDB-API-Key (Filmdaten, Poster, Trailer)
+Steht bereits in `docs/config.js` (`tmdbApiKey`). Für ein neues Projekt:
+Konto auf <https://www.themoviedb.org/signup>, dann unter
+<https://www.themoviedb.org/settings/api> einen Key anfordern und eintragen.
 
-1. Kostenloses Konto auf <https://www.themoviedb.org/signup> anlegen.
-2. <https://www.themoviedb.org/settings/api> öffnen → **Request an API Key**
-   → Typ *Developer* → Formular ausfüllen
-   (Anwendungsname: `Filmabend`, URL: `https://dummisa.github.io/filmabend/`,
-   Zweck: private Watchlist für Freunde).
-3. Auf der API-Seite steht danach ein **API Key** (32 Zeichen) und ein
-   **API Read Access Token** (beginnt mit `eyJ…`). Einen davon kopieren und
-   in `docs/config.js` eintragen:
+### Schritt 2: Firestore im bestehenden Firebase-Projekt einrichten (einmalig, ~5 Minuten)
 
-   ```js
-   tmdbApiKey: 'HIER_DEN_KEY_EINFUEGEN',
-   ```
+Die Werte in `docs/config.js` (Projekt `watchlist-fe32e`) bleiben gleich –
+es kommen nur zwei Dienste dazu.
 
-Der Key darf in der Website sichtbar sein – er kann nur öffentliche
-Filmdaten lesen.
+**2a. Projekt öffnen**
+<https://console.firebase.google.com> → Projekt **watchlist-fe32e** anklicken.
 
-### Schritt 2: Firebase (geteilte Liste für alle)
+**2b. Firestore-Datenbank anlegen**
+1. Links im Menü **Build / Erstellen → Firestore Database** (nicht
+   „Realtime Database“) → **Datenbank erstellen**.
+2. Edition: **Standard** (falls gefragt) → Datenbank-ID `(default)` lassen.
+3. Standort: **`europe-west6` (Zürich)** → Weiter.
+   ⚠️ Der Standort lässt sich später nicht ändern.
+4. **Im Produktionsmodus starten** → **Erstellen**.
 
-1. <https://console.firebase.google.com> → **Projekt hinzufügen** → Name
-   `filmabend` → Google Analytics kann aus bleiben → **Projekt erstellen**.
-2. Links im Menü **Build / Erstellen → Realtime Database → Datenbank erstellen**
-   → Standort `Belgium (europe-west1)` → **Im Sperrmodus starten** → Aktivieren.
-3. In der Datenbank auf den Tab **Regeln** wechseln, den Inhalt durch
-   Folgendes ersetzen und **Veröffentlichen** klicken:
+**2c. Anonyme Anmeldung einschalten** (wie beim Essensplan)
+1. Links **Build / Erstellen → Authentication → Jetzt starten**.
+2. Tab **Sign-in method / Anmeldemethode** → **Anonym** → aktivieren → **Speichern**.
+3. Im selben Bereich Tab **Einstellungen → Autorisierte Domains** →
+   **Domain hinzufügen** → `dummisa.github.io` → Hinzufügen.
 
-   ```json
-   {
-     "rules": {
-       "watchlist": {
-         ".read": true,
-         ".write": true,
-         "$movieId": {
-           ".validate": "newData.hasChildren(['id', 'title'])"
-         }
-       }
-     }
-   }
-   ```
+   Das ist nur eine technische Kennung pro Gerät; angemeldet wird man auf der
+   Seite trotzdem einfach mit dem Namen.
 
-   (Jeder, der die Seite kennt, darf die Liste lesen und ändern – für eine
-   Freundesgruppe genau richtig. Alles ausserhalb von `watchlist` bleibt gesperrt.)
+**2d. Regeln veröffentlichen**
+1. **Firestore Database → Tab Regeln**.
+2. Alles im Textfeld löschen, den kompletten Inhalt der Datei
+   **`firestore.rules`** (aus diesem Projekt) einfügen → **Veröffentlichen**.
 
-4. Oben auf der Datenbank-Seite steht die **Datenbank-URL**, z.B.
-   `https://filmabend-a1b2c-default-rtdb.europe-west1.firebasedatabase.app`
-   – die brauchst du gleich.
-5. Zurück zur **Projektübersicht** → **Web-App hinzufügen** (Symbol `</>`)
-   → Name `filmabend` → Firebase Hosting *nicht* nötig → **App registrieren**.
-   Es erscheint ein Block `const firebaseConfig = { … }`.
-6. Die Werte daraus in `docs/config.js` in den Block `firebase: { … }`
-   übertragen. **Wichtig:** `databaseURL` ist im angezeigten Block manchmal
-   nicht dabei – dann die URL aus Punkt 4 eintragen. Beispiel:
-
-   ```js
-   firebase: {
-     apiKey: 'AIza…',
-     authDomain: 'filmabend-a1b2c.firebaseapp.com',
-     databaseURL: 'https://filmabend-a1b2c-default-rtdb.europe-west1.firebasedatabase.app',
-     projectId: 'filmabend-a1b2c',
-     storageBucket: 'filmabend-a1b2c.firebasestorage.app',
-     messagingSenderId: '123456789012',
-     appId: '1:123456789012:web:abcdef123456'
-   }
-   ```
-
-Die Firebase-Web-Konfiguration ist öffentlich gedacht – der Schutz der
-Datenbank läuft über die Regeln aus Punkt 3, nicht über Geheimhaltung.
+Fertig. Die alte *Realtime Database* bleibt unverändert bestehen, bis du die
+alte Liste übernommen hast (siehe unten).
 
 ### Schritt 3: Lokal ausprobieren (Positron)
 
 1. Projektordner `filmabend` in Positron öffnen (**File → Open Folder**).
-2. Terminal öffnen (**Terminal → New Terminal**) und starten:
+2. Terminal (**Terminal → New Terminal**):
 
    ```
    python run.py
@@ -116,68 +90,83 @@ Datenbank läuft über die Regeln aus Punkt 3, nicht über Geheimhaltung.
    Der Browser öffnet <http://localhost:8000/>. Im Terminal steht, ob die
    Schlüssel erkannt wurden. Beenden mit `Ctrl+C`.
 
-## Auf GitHub veröffentlichen
+### Schritt 4: Veröffentlichen
 
-1. Auf <https://github.com/new> ein neues Repository anlegen:
-   Name `filmabend`, **Public** (GitHub Pages ist bei kostenlosen Konten
-   nur für öffentliche Repos verfügbar), *keine* README/.gitignore hinzufügen.
-2. Im Positron-Terminal (im Projektordner):
+Im Positron-Terminal (oder über die Source-Control-Ansicht):
 
-   ```
-   git init
-   git add .
-   git commit -m "Filmabend"
-   git branch -M main
-   git remote add origin https://github.com/dummisa/filmabend.git
-   git push -u origin main
-   ```
+```
+git add -A
+git commit -m "Profile, Gruppen und Abstimmungen"
+git push
+```
 
-   (Alternativ über die **Source Control**-Ansicht in Positron:
-   *Initialize Repository* → Commit → *Publish Branch*.)
-3. Auf github.com im Repo: **Settings → Pages → Build and deployment →
-   Source: „GitHub Actions"**.
-4. Unter dem Tab **Actions** läuft nun „Deploy to GitHub Pages". Falls der
-   erste Lauf vor dem Umstellen auf „GitHub Actions" gestartet ist, dort
-   einfach **Re-run** klicken.
-5. Die Seite ist danach erreichbar unter **<https://dummisa.github.io/filmabend/>**.
+Nach ein bis zwei Minuten ist die neue Version unter
+**<https://dummisa.github.io/filmabend/>** online (GitHub Actions →
+„Deploy to GitHub Pages“).
 
-Jede weitere Änderung: committen und pushen → die Seite aktualisiert sich
-automatisch nach ein bis zwei Minuten. Die Watchlist selbst liegt in
-Firebase und ist davon unabhängig – Filme hinzufügen braucht keinen Push.
+### Schritt 5: Alte Liste übernehmen (einmalig)
+
+Auf der Seite mit deinem Namen anmelden → oben rechts auf **👤 Name** →
+**Alte gemeinsame Liste → Übernehmen**. Alle Filme der ersten Version landen
+auf deiner persönlichen Liste (gesehene als gesehen) und damit in jeder
+Gruppe, in der du bist. Danach kannst du die Realtime Database in der
+Firebase-Konsole löschen, wenn du willst.
 
 ## Bedienung
 
-- **Dein Name** oben rechts eintragen (wird gemerkt) – so sieht man, wer
-  welchen Film vorgeschlagen hat.
-- **Film hinzufügen:** Titel eintippen (deutsch, englisch oder original –
-  TMDB findet alle), Treffer anklicken (oder mit ↑/↓ und Enter wählen). Genre,
-  Laufzeit, Jahr, Poster, Bewertung und Trailer werden automatisch von TMDB geholt.
-- **Titel:** Filme heissen immer wie im Original. Ist die Originalsprache weder
-  Deutsch noch Englisch (z.B. ein koreanischer oder französischer Film), steht
-  der englische Titel in einer zweiten Zeile darunter.
-- **Filtern:** Über **Filter & Sortierung** auf- und zuklappen (auf dem Handy
-  standardmässig zu, am Desktop offen – die Wahl wird gemerkt; die Zahl am
-  Button zeigt, wie viele Filter gerade aktiv sind). Chips bei *Genre*, *Länge*
-  (< 90 / 90–120 / 120–150 / > 150 min) und *Jahr* (Jahrzehnte) anklicken –
-  mehrere gleichzeitig möglich. Dazu Textsuche und Sortierung (zuletzt
-  hinzugefügt, Titel, Jahr, Länge, Bewertung).
-- **Handy:** Solange die Tastatur offen ist, zeigt die Filmsuche die Treffer
-  kompakt (nur Titel), danach wieder mit Poster und Jahr.
-- **Trailer:** Klick auf die Filmkarte (oder den Button ▶ Trailer) öffnet den
-  YouTube-Trailer in einem neuen Tab – bevorzugt in der **Originalsprache** des
-  Films, sonst Englisch, dann Deutsch (die Sprache steht im Tooltip des Buttons).
-  Gibt es bei TMDB gar keinen Trailer, öffnet sich stattdessen die YouTube-Suche.
-- **🎲 Zufallsfilm** wählt einen Film aus der aktuell gefilterten Liste aus.
-- **✓ Gesehen** verschiebt den Film in den Tab *Gesehen* (von dort aus auch
-  wieder zurück), **🗑** entfernt ihn ganz.
+**Anmelden:** Namen eingeben. Gibt es den Namen schon, bist du angemeldet;
+sonst fragt die Seite, ob ein neues Profil angelegt werden soll. Das Gerät
+merkt sich das. Profil wechseln: **👤 Name → Profil wechseln**.
+
+**Meine Liste:** Tabs *Watchlist* und *Gesehen*.
+- Film hinzufügen: Titel eintippen (deutsch, englisch oder original), Treffer
+  antippen. Genre, Länge, Jahr, FSK, Poster und Trailer kommen von TMDB.
+- **✓ Gesehen** verschiebt einen Film zu *Gesehen*; dort holt
+  **↩ Nochmals schauen** ihn zurück. **🗑** entfernt ihn.
+
+**Gruppen:** oben **＋ Gruppe** → neue Gruppe erstellen oder mit Code beitreten.
+- **📨 Einladen** zeigt Code und Link (auf dem Handy direkt teilbar). Wer den
+  Link öffnet, meldet sich an und wird gefragt, ob er beitreten will.
+- *Gemeinsame Liste* = alle Filme auf den Watchlists der Mitglieder. Jede
+  Karte zeigt **Will sehen:** und **Gesehen:**. Mit **☆/★ Meine Liste** und
+  **👁 Gesehen?** änderst du deinen eigenen Stand direkt hier.
+- Filter *Nicht gesehen von* (Personen antippen, z.B. alle, die heute dabei
+  sind) und *Gesehen von höchstens* (niemandem / 1 Person / 2 Personen …).
+  Sortierung zusätzlich nach *Meistgewünscht*.
+- **Verlassen** nimmt dich aus der Gruppe; deine Liste bleibt erhalten.
+
+**Abstimmung** (Tab in der Gruppe; 🗳 an der Gruppe zeigt, dass eine läuft,
+🔴 dass du noch etwas tun musst):
+1. **Neue Abstimmung starten:** Titel, Abstimmungsart, Nominierungen pro
+   Person (1–5) und optional Bedingungen:
+   Länge höchstens · FSK höchstens · Genres · *schon gesehen*: egal / von
+   niemandem / von höchstens N Personen / nicht von bestimmten Leuten.
+   Die Seite zeigt sofort, wie viele Filme der Liste passen.
+2. **Nominieren:** Jede Person nominiert passende Filme aus der Liste (eigene
+   Nominierungen lassen sich zurückziehen). Danach **Weiter zur Abstimmung**
+   (ab 2 nominierten Filmen).
+3. **Abstimmen**, je nach Art:
+   - *Zustimmung*: alle Filme anhaken, die okay sind – meiste Häkchen gewinnt.
+   - *Eine Stimme*: genau einen Film wählen.
+   - *Rangfolge*: Platz 1, 2, 3 antippen (3, 2, 1 Punkte).
+   Man sieht, wer schon abgestimmt hat, aber nicht wofür.
+4. **Auszählen & beenden:** Gewinner mit Trailer-Button und Punkte-Balken.
+   Bei Gleichstand entscheidet das Los. Frühere Abstimmungen bleiben als
+   Verlauf sichtbar.
+
+Jedes Mitglied kann eine Abstimmung weiterschalten, auszählen oder löschen.
 
 ## Hinweise
 
-- Die Filmsprache (Titel, Beschreibung, Genres) steht in `config.js` unter
-  `language` (`de-DE`; z.B. `en-US` für Englisch).
-- Texte der Oberfläche liegen gesammelt oben in `docs/app.js` (Objekt `T`),
-  die Farben oben in `docs/style.css` (`:root`-Variablen).
-- Ohne Firebase-Konfiguration speichert die Seite die Liste nur im eigenen
-  Browser (`localStorage`) – praktisch zum Testen, aber nicht geteilt.
+- **Datenschutz/Sicherheit wie beim Essensplan:** Wer die Seite kennt, kann
+  sich mit jedem vorhandenen Namen anmelden – gedacht für Freunde, nicht für
+  Geheimes. Gruppen erscheinen nur bei ihren Mitgliedern; beitreten geht nur mit Code/Link.
+- **FSK:** Altersfreigabe aus Deutschland (sonst Schweiz) laut TMDB. Ältere
+  Filme bekommen sie automatisch nachgetragen. Filme ohne FSK-Angabe zählen
+  bei einer FSK-Bedingung nicht als passend.
+- **Kosten:** Der kostenlose Spark-Plan reicht (50 000 Lesezugriffe/Tag).
+- Sprache für Beschreibung und Genres: `language` in `docs/config.js`.
+  Titel werden immer im Original gezeigt (bei nicht deutsch-/englischsprachigen
+  Filmen mit englischem Titel darunter).
 - Dieses Produkt verwendet die TMDB-API, ist aber nicht von TMDB unterstützt
   oder zertifiziert.

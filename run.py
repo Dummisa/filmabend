@@ -40,16 +40,14 @@ def check_config():
 
     tmdb = read_config_value(text, 'tmdbApiKey')
     fb_key = read_config_value(text, 'apiKey')
-    fb_url = read_config_value(text, 'databaseURL')
+    fb_project = read_config_value(text, 'projectId')
 
     print('Konfiguration (docs/config.js):')
     print('  TMDB-Key ........... ' + ('OK' if tmdb else 'FEHLT  -> Filmsuche funktioniert nicht (README, Schritt 1)'))
-    if fb_key and fb_url:
-        print('  Firebase ........... OK (geteilte Liste)')
-    elif fb_key or fb_url:
-        print('  Firebase ........... UNVOLLSTAENDIG -> apiKey und databaseURL werden beide gebraucht')
+    if fb_key and fb_project:
+        print('  Firebase ........... OK (Projekt ' + fb_project + ')')
     else:
-        print('  Firebase ........... FEHLT  -> lokaler Modus, Liste nur im eigenen Browser (README, Schritt 2)')
+        print('  Firebase ........... FEHLT  -> apiKey und projectId eintragen (README, Schritt 2)')
     print()
 
 

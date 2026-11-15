@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Filmabend – Watchlist</title>
-<meta name="description" content="Gemeinsame Watchlist für den Filmabend – Filme hinzufügen, nach Genre, Länge und Jahr filtern, Trailer anschauen.">
+<meta name="description" content="Persönliche und gemeinsame Watchlists für den Filmabend – mit Filtern, Trailern und Abstimmungen.">
 <meta name="theme-color" content="#0f1117">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🎬%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
@@ -17,58 +17,84 @@
       <h1>🎬 Filmabend</h1>
       <p class="status"><span id="status-dot" class="dot"></span><span id="status-text">Verbinde …</span></p>
     </div>
-    <label class="who">
-      <span>Dein Name</span>
-      <input id="user-name" type="text" placeholder="z.B. Daniel" maxlength="24" autocomplete="nickname">
-    </label>
+    <button type="button" id="me-btn" class="btn me-btn hidden" data-action="open-profile"></button>
   </header>
 
   <div id="banner" class="banner hidden" role="status"></div>
 
-  <section class="card add">
-    <h2>Film hinzufügen</h2>
-    <div class="search">
-      <input id="search-input" type="search" placeholder="Filmtitel eingeben …" autocomplete="off" spellcheck="false" aria-label="Film suchen">
-      <div id="search-results" class="results hidden" role="listbox"></div>
-    </div>
-    <p id="search-hint" class="hint"></p>
+  <!-- Anmeldung (nur Name, wie beim Essensplan) -->
+  <section id="login" class="card login hidden">
+    <h2>Wer bist du?</h2>
+    <form id="login-form" class="login-row" autocomplete="off">
+      <input id="login-name" type="text" placeholder="Dein Name" maxlength="30" aria-label="Dein Name">
+      <button type="submit" class="btn primary">Weiter</button>
+    </form>
+    <div id="login-confirm" class="login-confirm hidden"></div>
+    <div id="login-known" class="login-known"></div>
   </section>
 
-  <nav class="tabs" role="tablist" aria-label="Ansicht">
-    <button type="button" class="tab active" role="tab" data-view="watchlist">Watchlist <span class="count" id="count-watchlist">0</span></button>
-    <button type="button" class="tab" role="tab" data-view="watched">Gesehen <span class="count" id="count-watched">0</span></button>
-  </nav>
+  <main id="main" class="hidden">
+    <nav id="spaces" class="spaces" aria-label="Listen"></nav>
+    <section id="group-head" class="card group-head hidden"></section>
+    <nav id="subtabs" class="tabs" role="tablist"></nav>
 
-  <div class="toolbar">
-    <button type="button" id="filter-toggle" class="btn" aria-expanded="true" aria-controls="filters">
-      <span class="chev">▾</span> Filter &amp; Sortierung <span id="filter-count" class="count hidden">0</span>
-    </button>
-    <button type="button" id="random" class="btn primary">🎲 Zufallsfilm</button>
-  </div>
+    <!-- Listenansicht (persönlich oder Gruppe) -->
+    <div id="view-list">
+      <section class="card add">
+        <h2 id="add-title">Film zu deiner Liste hinzufügen</h2>
+        <div class="search">
+          <input id="search-input" type="search" placeholder="Filmtitel eingeben …" autocomplete="off" spellcheck="false" aria-label="Film suchen">
+          <div id="search-results" class="results hidden" role="listbox"></div>
+        </div>
+        <p id="search-hint" class="hint"></p>
+      </section>
 
-  <section id="filters" class="card filters">
-    <div class="filter-row">
-      <span class="label">Genre</span>
-      <div class="chips" id="chips-genre"></div>
-    </div>
-    <div class="filter-row">
-      <span class="label">Länge</span>
-      <div class="chips" id="chips-length"></div>
-    </div>
-    <div class="filter-row">
-      <span class="label">Jahr</span>
-      <div class="chips" id="chips-year"></div>
-    </div>
-    <div class="filter-row tools">
-      <input id="list-search" type="search" placeholder="In der Liste suchen …" aria-label="In der Liste suchen">
-      <select id="sort" aria-label="Sortierung"></select>
-      <button type="button" id="reset-filters" class="btn ghost hidden">Filter zurücksetzen</button>
-    </div>
-  </section>
+      <div class="toolbar">
+        <button type="button" id="filter-toggle" class="btn" aria-expanded="true" aria-controls="filters">
+          <span class="chev">▾</span> Filter &amp; Sortierung <span id="filter-count" class="count hidden">0</span>
+        </button>
+        <button type="button" id="random" class="btn primary">🎲 Zufallsfilm</button>
+      </div>
 
-  <p id="summary" class="summary"></p>
-  <div id="grid" class="grid"></div>
-  <div id="empty" class="empty hidden"></div>
+      <section id="filters" class="card filters">
+        <div class="filter-row">
+          <span class="label">Genre</span>
+          <div class="chips" id="chips-genre"></div>
+        </div>
+        <div class="filter-row">
+          <span class="label">Länge</span>
+          <div class="chips" id="chips-length"></div>
+        </div>
+        <div class="filter-row">
+          <span class="label">Jahr</span>
+          <div class="chips" id="chips-year"></div>
+        </div>
+        <div class="filter-row group-only">
+          <span class="label">Nicht gesehen von</span>
+          <div class="chips" id="chips-notseen"></div>
+        </div>
+        <div class="filter-row group-only">
+          <span class="label">Gesehen von höchstens</span>
+          <div class="chips" id="chips-maxseen"></div>
+        </div>
+        <div class="filter-row tools">
+          <input id="list-search" type="search" placeholder="In der Liste suchen …" aria-label="In der Liste suchen">
+          <select id="sort" aria-label="Sortierung"></select>
+          <button type="button" id="reset-filters" class="btn ghost hidden">Filter zurücksetzen</button>
+        </div>
+      </section>
+
+      <p id="summary" class="summary"></p>
+      <div id="grid" class="grid"></div>
+      <div id="empty" class="empty hidden"></div>
+    </div>
+
+    <!-- Abstimmungen einer Gruppe -->
+    <div id="view-vote" class="hidden">
+      <section id="vote-form" class="card vote-form hidden"></section>
+      <div id="vote-area"></div>
+    </div>
+  </main>
 
   <footer>
     Filmdaten und Trailer von <a href="https://www.themoviedb.org/" target="_blank" rel="noopener">TMDB</a>.
@@ -76,11 +102,14 @@
   </footer>
 </div>
 
+<!-- Dialoge (Profil, Gruppe, Einladen, Bestätigen) -->
+<div id="dialog" class="overlay hidden" data-action="overlay">
+  <div class="sheet" role="dialog" aria-modal="true" id="dialog-body"></div>
+</div>
+
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
 <script src="config.js"></script>
-<script src="tmdb.js"></script>
-<script src="store.js"></script>
-<script src="app.js"></script>
+<script type="module" src="app.js"></script>
 </body>
 </html>
