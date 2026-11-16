@@ -11,10 +11,12 @@
  *                                    share: {<gid>: {m<id>: Zeit}}  in welcher Gruppe geteilt
  *                                    shareInit: {<gid>: true}       share für Gruppe angelegt
  *                                    inbox: {<id>: {movieId, by, gid, at}}  Rückfragen "gesehen"
+ *                                    rewatch: {m<id>: Zeit}  nochmals schauen (bleibt bei "gesehen")
  *                                    updatedAt }
  *   movies/{tmdbId}                Filmdaten von TMDB (geteilt, Cache)
  *   groups/{groupId}               { name, code, members: [userId], createdBy, createdAt }
  *   groups/{groupId}/votes/{id}    Abstimmungen
+ *   groups/{groupId}/watched/{tmdbId}  { movieId, at, by }  zusammen gesehen
  */
 const FB = 'https://www.gstatic.com/firebasejs/13.1.0/';
 
@@ -74,7 +76,7 @@ export function watchMovies(cb, onError) {
 export function watchList(uid, cb, onError) {
   return fs.onSnapshot(fs.doc(db, 'lists', uid), snap => {
     const d = snap.exists() ? snap.data() : {};
-    cb({ watch: d.watch || {}, seen: d.seen || {}, share: d.share || {}, shareInit: d.shareInit || {}, inbox: d.inbox || {} });
+    cb({ watch: d.watch || {}, seen: d.seen || {}, share: d.share || {}, shareInit: d.shareInit || {}, inbox: d.inbox || {}, rewatch: d.rewatch || {} });
   }, onError);
 }
 
@@ -98,7 +100,7 @@ export async function createUser(name) {
 export async function ensureList(uid) {
   const ref = fs.doc(db, 'lists', uid);
   const snap = await fs.getDoc(ref);
-  if (!snap.exists()) await fs.setDoc(ref, { watch: {}, seen: {}, share: {}, shareInit: {}, inbox: {}, updatedAt: now() });
+  if (!snap.exists()) await fs.setDoc(ref, { watch: {}, seen: {}, share: {}, shareInit: {}, inbox: {}, rewatch: {}, updatedAt: now() });
 }
 
 /* Beliebige Felder einer Liste ändern: { 'share.<gid>.m123': Zeit | null } – null löscht */
@@ -182,4 +184,17 @@ export function updateVote(groupId, voteId, patch) {
 
 export function deleteVote(groupId, voteId) {
   return fs.deleteDoc(voteRef(groupId, voteId));
+}
+
+/* ---------- Zusammen gesehen (Verlauf einer Gruppe) ---------- */
+export function watchGroupWatched(groupId, cb, onError) {
+  return watchQuery(fs.collection(db, 'groups', groupId, 'watched'), cb, onError);
+}
+
+export function addWatched(groupId, movieId, uid) {
+  return fs.setDoc(fs.doc(db, 'groups', groupId, 'watched', String(movieId)), { movieId: Number(movieId), at: now(), by: uid });
+}
+
+export function removeWatched(groupId, movieId) {
+  return fs.deleteDoc(fs.doc(db, 'groups', groupId, 'watched', String(movieId)));
 }

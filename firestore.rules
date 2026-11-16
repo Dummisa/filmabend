@@ -26,12 +26,13 @@ service cloud.firestore {
       allow read: if signedIn();
       allow create, update: if signedIn()
         && exists(/databases/$(database)/documents/users/$(userId))
-        && data().keys().hasOnly(['watch', 'seen', 'share', 'shareInit', 'inbox', 'updatedAt'])
+        && data().keys().hasOnly(['watch', 'seen', 'share', 'shareInit', 'inbox', 'rewatch', 'updatedAt'])
         && data().watch is map && data().watch.size() <= 3000
         && data().seen is map && data().seen.size() <= 5000
         && (!('share' in data()) || (data().share is map && data().share.size() <= 50))
         && (!('shareInit' in data()) || data().shareInit is map)
-        && (!('inbox' in data()) || (data().inbox is map && data().inbox.size() <= 300));
+        && (!('inbox' in data()) || (data().inbox is map && data().inbox.size() <= 300))
+        && (!('rewatch' in data()) || data().rewatch is map);
       allow delete: if false;
     }
 
@@ -73,6 +74,16 @@ service cloud.firestore {
           && data().maxNominations is int && data().maxNominations >= 0 && data().maxNominations <= 100
           && data().nominations is map && data().nominations.size() <= 100
           && data().ballots is map && data().ballots.size() <= 30;
+        allow delete: if signedIn();
+      }
+
+      // Zusammen gesehene Filme einer Gruppe (Verlauf)
+      match /watched/{movieId} {
+        allow read: if signedIn();
+        allow create, update: if signedIn()
+          && movieId.matches('^[0-9]{1,10}$')
+          && data().keys().hasOnly(['movieId', 'at', 'by'])
+          && data().movieId is int && data().at is int && str(data().by, 40);
         allow delete: if signedIn();
       }
     }

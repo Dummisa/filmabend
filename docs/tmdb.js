@@ -138,7 +138,33 @@ export async function details(id) {
     trailerKey: trailer ? trailer.key : null,
     trailerLanguage: trailer ? trailer.language : null,
     fsk: fskFromReleaseDates(m.release_dates),
-    fskChecked: true
+    fskChecked: true,
+    collectionId: m.belongs_to_collection ? m.belongs_to_collection.id : null,
+    collectionChecked: true
+  };
+}
+
+/* Zu welcher Filmreihe gehört ein Film? (für ältere Einträge ohne diese Angabe) */
+export async function collectionOf(id) {
+  const m = await request('/movie/' + id);
+  return m.belongs_to_collection ? m.belongs_to_collection.id : null;
+}
+
+/* Alle Teile einer Filmreihe */
+export async function collectionParts(collectionId) {
+  const c = await request('/collection/' + collectionId, { language: 'en-US' });
+  return {
+    name: c.name || '',
+    parts: (c.parts || []).map(p => ({
+      id: p.id,
+      title: p.original_title || p.title,
+      titleEn: p.title,
+      originalLanguage: p.original_language || null,
+      subtitle: (!isDeOrEn(p.original_language) && p.title && p.title !== p.original_title) ? p.title : null,
+      release_date: p.release_date || '',
+      year: yearOf(p.release_date),
+      posterPath: p.poster_path || null
+    }))
   };
 }
 

@@ -293,3 +293,17 @@ export function fskFromReleaseDates(releaseDates) {
   }
   return null;
 }
+
+/* ---------- Filmreihen (Fortsetzungen) ---------- */
+
+/* parts: Teile einer TMDB-Collection [{id, release_date, …}].
+   Liefert den nächsten Teil nach currentId (nach Erscheinungsdatum), sonst null.
+   Teile ohne Datum kommen ans Ende (meist angekündigt, aber ohne Termin). */
+export function nextInCollection(parts, currentId) {
+  const sorted = (parts || []).slice().sort((a, b) => {
+    const da = a.release_date || '9999', dbb = b.release_date || '9999';
+    return da.localeCompare(dbb) || a.id - b.id;
+  });
+  const i = sorted.findIndex(p => p.id === Number(currentId));
+  return i >= 0 && i < sorted.length - 1 ? sorted[i + 1] : null;
+}
