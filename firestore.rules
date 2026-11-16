@@ -36,11 +36,11 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Filmdaten von TMDB (gemeinsamer Zwischenspeicher)
+    // Film- und Seriendaten von TMDB (gemeinsamer Zwischenspeicher; Serien: "tv<ID>")
     match /movies/{movieId} {
       allow read: if signedIn();
       allow create, update: if signedIn()
-        && movieId.matches('^[0-9]{1,10}$')
+        && movieId.matches('^(tv)?[0-9]{1,10}$')
         && data().keys().size() <= 30
         && str(data().title, 300)
         && (!('overview' in data()) || str(data().overview, 5000));
@@ -51,12 +51,14 @@ service cloud.firestore {
     match /groups/{groupId} {
       allow read: if signedIn();
       allow create: if signedIn()
-        && data().keys().hasOnly(['name', 'code', 'members', 'createdBy', 'createdAt'])
+        && data().keys().hasOnly(['name', 'code', 'members', 'type', 'createdBy', 'createdAt'])
+        && (!('type' in data()) || data().type in ['movie', 'tv', 'mixed'])
         && str(data().name, 40) && data().name.size() > 0
         && data().code is string && data().code.matches('^[A-Z0-9]{6}$')
         && data().members is list && data().members.size() <= 30;
       allow update: if signedIn()
-        && data().keys().hasOnly(['name', 'code', 'members', 'createdBy', 'createdAt'])
+        && data().keys().hasOnly(['name', 'code', 'members', 'type', 'createdBy', 'createdAt'])
+        && (!('type' in data()) || data().type in ['movie', 'tv', 'mixed'])
         && data().code == resource.data.code
         && str(data().name, 40) && data().name.size() > 0
         && data().members is list && data().members.size() <= 30;
@@ -81,9 +83,9 @@ service cloud.firestore {
       match /watched/{movieId} {
         allow read: if signedIn();
         allow create, update: if signedIn()
-          && movieId.matches('^[0-9]{1,10}$')
-          && data().keys().hasOnly(['movieId', 'at', 'by'])
-          && data().movieId is int && data().at is int && str(data().by, 40);
+          && movieId.matches('^(tv)?[0-9]{1,10}$')
+          && data().keys().hasOnly(['key', 'at', 'by'])
+          && str(data().key, 20) && data().at is int && str(data().by, 40);
         allow delete: if signedIn();
       }
     }

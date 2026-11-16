@@ -13,10 +13,10 @@
  *                                    inbox: {<id>: {movieId, by, gid, at}}  Rückfragen "gesehen"
  *                                    rewatch: {m<id>: Zeit}  nochmals schauen (bleibt bei "gesehen")
  *                                    updatedAt }
- *   movies/{tmdbId}                Filmdaten von TMDB (geteilt, Cache)
- *   groups/{groupId}               { name, code, members: [userId], createdBy, createdAt }
+ *   movies/{tmdbId | tv<tmdbId>}   Film-/Seriendaten von TMDB (geteilt, Cache)
+ *   groups/{groupId}               { name, code, members: [userId], type: movie|tv|mixed, createdBy, createdAt }
  *   groups/{groupId}/votes/{id}    Abstimmungen
- *   groups/{groupId}/watched/{tmdbId}  { movieId, at, by }  zusammen gesehen
+ *   groups/{groupId}/watched/{docId}  { key, at, by }  zusammen gesehen
  */
 const FB = 'https://www.gstatic.com/firebasejs/13.1.0/';
 
@@ -49,7 +49,9 @@ export async function init(config, onReady) {
 
 /* ---------- Hilfen ---------- */
 const now = () => Date.now();
-const mk = id => 'm' + id;
+/* Schlüssel: Filme "m123", Serien "t123"; reine Zahlen sind Filme */
+const mk = x => (/^[mt]\d+$/.test(String(x)) ? String(x) : 'm' + String(x).replace(/^m/, ''));
+const docId = x => { const k = mk(x); return (k[0] === 't' ? 'tv' : '') + k.slice(1); };
 
 function watchQuery(q, cb, onError) {
   return fs.onSnapshot(q, snap => {
@@ -128,7 +130,7 @@ export function saveMovie(movie) {
   const clean = {};
   Object.entries(movie).forEach(([k, v]) => { if (v !== undefined) clean[k] = v; });
   clean.updatedAt = now();
-  return fs.setDoc(fs.doc(db, 'movies', String(movie.id)), clean, { merge: true });
+  return fs.setDoc(fs.doc(db, 'movies', docId((movie.type === 'tv' ? 't' : 'm') + movie.id)), clean, { merge: true });
 }
 
 /* ---------- Gruppen ---------- */
@@ -139,11 +141,11 @@ export async function findGroupByCode(code) {
   return found;
 }
 
-export async function createGroup(name, uid, makeCode) {
+export async function createGroup(name, uid, makeCode, type) {
   let code = makeCode();
   for (let i = 0; i < 5 && await findGroupByCode(code); i++) code = makeCode();
   const ref = await fs.addDoc(fs.collection(db, 'groups'), {
-    name, code, members: [uid], createdBy: uid, createdAt: now()
+    name, code, members: [uid], type: type || 'movie', createdBy: uid, createdAt: now()
   });
   return { id: ref.id, code };
 }
@@ -156,8 +158,8 @@ export function leaveGroup(groupId, uid) {
   return fs.updateDoc(fs.doc(db, 'groups', groupId), { members: fs.arrayRemove(uid) });
 }
 
-export function renameGroup(groupId, name) {
-  return fs.updateDoc(fs.doc(db, 'groups', groupId), { name });
+export function renameGroup(groupId, name, type) {
+  return fs.updateDoc(fs.doc(db, 'groups', groupId), type ? { name, type } : { name });
 }
 
 /* ---------- Abstimmungen ---------- */
@@ -191,10 +193,10 @@ export function watchGroupWatched(groupId, cb, onError) {
   return watchQuery(fs.collection(db, 'groups', groupId, 'watched'), cb, onError);
 }
 
-export function addWatched(groupId, movieId, uid) {
-  return fs.setDoc(fs.doc(db, 'groups', groupId, 'watched', String(movieId)), { movieId: Number(movieId), at: now(), by: uid });
+export function addWatched(groupId, key, uid) {
+  return fs.setDoc(fs.doc(db, 'groups', groupId, 'watched', docId(key)), { key: mk(key), at: now(), by: uid });
 }
 
-export function removeWatched(groupId, movieId) {
-  return fs.deleteDoc(fs.doc(db, 'groups', groupId, 'watched', String(movieId)));
+export function removeWatched(groupId, key) {
+  return fs.deleteDoc(fs.doc(db, 'groups', groupId, 'watched', docId(key)));
 }

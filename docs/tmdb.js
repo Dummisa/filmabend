@@ -11,7 +11,7 @@
  *          dann Deutsch, dann irgendeiner.
  * FSK:     Altersfreigabe Deutschland (sonst Schweiz), z.B. 12.
  */
-import { fskFromReleaseDates } from './logic.js?v=__V__';
+import { fskFromReleaseDates, fskFromContentRatings, isTv, tmdbId } from './logic.js?v=__V__';
 
 const BASE = 'https://api.themoviedb.org/3';
 const IMG = 'https://image.tmdb.org/t/p/';
@@ -58,15 +58,19 @@ function isDeOrEn(langCode) {
   return langCode === 'de' || langCode === 'en';
 }
 
-/* Suche nach Titel (findet auch deutsche/alternative Titel) – max. 8 Treffer. */
+/* Suche nach Filmen und Serien (findet auch deutsche/alternative Titel) – max. 10 Treffer. */
 export async function search(query) {
-  const data = await request('/search/movie', {
+  const data = await request('/search/multi', {
     query: query, include_adult: 'false', page: 1, language: 'en-US'
   });
-  return (data.results || []).slice(0, 8).map(r => {
+  return (data.results || []).filter(r => r.media_type === 'movie' || r.media_type === 'tv').slice(0, 10).map(r => {
+    const tv = r.media_type === 'tv';
+    if (tv) { r.title = r.name; r.original_title = r.original_name; r.release_date = r.first_air_date; }
     const original = r.original_title || r.title;
     return {
       id: r.id,
+      type: tv ? 'tv' : 'movie',
+      key: (tv ? 't' : 'm') + r.id,
       title: original,
       titleEn: r.title || original,
       originalLanguage: r.original_language || null,
@@ -91,14 +95,65 @@ export function pickTrailer(videos, originalLanguage) {
   return list.length ? { key: list[0].key, language: list[0].iso_639_1 || null } : null;
 }
 
-/* Nur die Altersfreigabe (für Filme, die noch keine haben) */
-export async function fsk(id) {
-  const r = await request('/movie/' + id + '/release_dates');
-  return fskFromReleaseDates(r);
+/* Nur die Altersfreigabe (für Titel, die noch keine haben); key = m123 / t123 */
+export async function fsk(key) {
+  if (isTv(key)) return fskFromContentRatings(await request('/tv/' + tmdbId(key) + '/content_ratings'));
+  return fskFromReleaseDates(await request('/movie/' + tmdbId(key) + '/release_dates'));
+}
+
+/* Details zu einem Film oder einer Serie (key = m123 / t123 oder Film-ID) */
+export async function details(key) {
+  if (isTv(key)) return tvDetails(tmdbId(key));
+  return movieDetails(tmdbId(key));
+}
+
+/* Alle Details zu einer Serie (Titel, Staffeln, Folgen, FSK, Trailer). */
+async function tvDetails(id) {
+  const m = await request('/tv/' + id, { append_to_response: 'content_ratings' });
+  const originalLanguage = m.original_language || null;
+  const originalTitle = m.original_name || m.name || ('Serie ' + m.id);
+  let titleEn = originalTitle;
+  if (originalLanguage !== 'en') {
+    try {
+      const en = await request('/tv/' + id, { language: 'en-US' });
+      if (en && en.name) titleEn = en.name;
+    } catch (e) { /* ohne englischen Titel weiter */ }
+  }
+  let trailer = null;
+  try {
+    const langs = [originalLanguage, 'en', 'de', 'null'].filter(Boolean);
+    const v = await request('/tv/' + id + '/videos', { language: 'en-US', include_video_language: Array.from(new Set(langs)).join(',') });
+    trailer = pickTrailer(v.results, originalLanguage);
+  } catch (e) { /* kein Trailer */ }
+  return {
+    id: m.id,
+    type: 'tv',
+    title: originalTitle,
+    originalTitle: originalTitle,
+    originalLanguage: originalLanguage,
+    titleEn: titleEn,
+    titleDe: m.name || null,
+    year: yearOf(m.first_air_date),
+    releaseDate: m.first_air_date || null,
+    runtime: null,
+    seasons: m.number_of_seasons || null,
+    episodes: m.number_of_episodes || null,
+    episodeRuntime: (m.episode_run_time && m.episode_run_time[0]) || (m.last_episode_to_air && m.last_episode_to_air.runtime) || null,
+    genres: (m.genres || []).map(g => g.name),
+    overview: m.overview || '',
+    posterPath: m.poster_path || null,
+    rating: m.vote_average ? Math.round(m.vote_average * 10) / 10 : null,
+    trailerKey: trailer ? trailer.key : null,
+    trailerLanguage: trailer ? trailer.language : null,
+    fsk: fskFromContentRatings(m.content_ratings),
+    fskChecked: true,
+    collectionId: null,
+    collectionChecked: true
+  };
 }
 
 /* Alle Details zu einem Film (inkl. englischem Titel, Trailer, FSK). */
-export async function details(id) {
+async function movieDetails(id) {
   const m = await request('/movie/' + id, { append_to_response: 'release_dates' });
   const originalLanguage = m.original_language || null;
   const originalTitle = m.original_title || m.title || ('Film ' + m.id);
@@ -123,6 +178,7 @@ export async function details(id) {
 
   return {
     id: m.id,
+    type: 'movie',
     title: originalTitle,
     originalTitle: originalTitle,
     originalLanguage: originalLanguage,
@@ -145,8 +201,9 @@ export async function details(id) {
 }
 
 /* Zu welcher Filmreihe gehört ein Film? (für ältere Einträge ohne diese Angabe) */
-export async function collectionOf(id) {
-  const m = await request('/movie/' + id);
+export async function collectionOf(key) {
+  if (isTv(key)) return null;
+  const m = await request('/movie/' + tmdbId(key));
   return m.belongs_to_collection ? m.belongs_to_collection.id : null;
 }
 
@@ -182,6 +239,6 @@ export function posterUrl(path, size) {
 /* Trailer-Link: direkter YouTube-Link, sonst YouTube-Suche. */
 export function trailerUrl(movie) {
   if (movie.trailerKey) return 'https://www.youtube.com/watch?v=' + movie.trailerKey;
-  const q = [movie.originalTitle || movie.title, movie.year, 'trailer'].filter(Boolean).join(' ');
+  const q = [movie.originalTitle || movie.title, movie.year, movie.type === 'tv' ? 'series trailer' : 'trailer'].filter(Boolean).join(' ');
   return 'https://www.youtube.com/results?search_query=' + encodeURIComponent(q);
 }

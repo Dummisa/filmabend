@@ -118,6 +118,15 @@ setzt **🔁 Rewatch** den Film wieder auf die Watchlist (auf Wunsch auch in
 Gruppen) – er bleibt dabei unter *Gesehen* und ist mit „🔁 Rewatch“ markiert.
 In Gruppen steht dann „🔁 Name“ bei *Will sehen*.
 
+**Filme und Serien:** Die Suche findet beides (Serien mit 📺). Serien zeigen
+Staffeln, Folgen und Folgenlänge; „gesehen“ gilt für die ganze Serie. Jede
+Gruppe hat eine Art – *Nur Filme* (Standard, auch für bestehende Gruppen),
+*Nur Serien* oder *Gemischt* – wählbar beim Erstellen und über ✏️. Serien
+landen nur in Gruppen, die Serien erlauben. Sind Filme und Serien gemischt,
+erscheint der Filter *Art*. Der Längenfilter und die Längen-Bedingung gelten
+nur für Filme; in gemischten Gruppen kann eine Abstimmung auf Filme oder
+Serien beschränkt werden. Fortsetzungen werden nur für Filme angeboten.
+
 **Film hinzufügen:** Titel eintippen, Treffer antippen. Bist du in Gruppen,
 fragt die Seite, **auf welche Listen** er soll: deine private Liste und/oder
 einzelne Gruppen. Aus *Meine Liste* heraus ist alles vorausgewählt, in einer
