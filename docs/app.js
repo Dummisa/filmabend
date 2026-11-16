@@ -8,9 +8,9 @@
  *   db.js     Firestore (Profile, Listen, Gruppen, Abstimmungen)
  *   logic.js  Filter, Zusammenführen, Bedingungen, Auszählung
  */
-import * as TMDB from './tmdb.js';
-import * as L from './logic.js';
-import * as DB from './db.js';
+import * as TMDB from './tmdb.js?v=__V__';
+import * as L from './logic.js?v=__V__';
+import * as DB from './db.js?v=__V__';
 
 /* ====================================================================
    Zustand
@@ -42,6 +42,7 @@ const S = {
   form: null,                // Formular "Neue Abstimmung"
   pendingJoin: null,         // Einladungscode aus dem Link
   loginPending: null,
+  usersFromServer: false,
   expectGroup: null          // gerade erstellt/beigetreten, noch nicht im Abo angekommen
 };
 
@@ -77,7 +78,7 @@ function languageName(code) {
   catch (e) { return code.toUpperCase(); }
 }
 
-const nameOf = uid => (S.users[uid] && S.users[uid].name) || '?';
+const nameOf = uid => (S.users[uid] && S.users[uid].name) || '…';
 const titleOf = m => (m && (m.originalTitle || m.title)) || 'Film';
 const myList = () => S.lists[S.userId] || { watch: {}, seen: {} };
 const inMyWatch = id => myList().watch[L.mkey(id)] != null;
@@ -207,11 +208,14 @@ function start() {
   S.connected = true;
   setStatus('live', 'Live verbunden');
 
-  DB.watchUsers(users => {
+  DB.watchUsers((users, fromCache) => {
     S.users = users;
     S.usersLoaded = true;
-    if (S.userId && !users[S.userId]) logout(true);
-    else if (S.userId && !subs.groups) onLogin();
+    if (!fromCache) S.usersFromServer = true;
+    // Abmelden nur, wenn der Server bestätigt, dass es das Profil nicht gibt
+    if (S.userId && !users[S.userId] && !fromCache) logout(true);
+    else if (S.userId && users[S.userId]) onLogin();
+    cleanOrphanMembers();
     render();
   }, onDbError);
 
@@ -227,13 +231,16 @@ function start() {
   render();
 }
 
+let loginStarted = false;
 async function onLogin() {
-  if (!S.userId || subs.groups) return;
+  if (!S.userId || loginStarted) return;
+  loginStarted = true;
   try { await DB.ensureList(S.userId); } catch (e) { onDbError(e); }
   syncListSubs();
   subs.groups = DB.watchMyGroups(S.userId, groups => {
     S.groups = groups;
     S.groupsLoaded = true;
+    cleanOrphanMembers();
     syncListSubs();
     syncVoteSubs();
     handlePendingJoin();
@@ -242,6 +249,7 @@ async function onLogin() {
 }
 
 function logout(silent) {
+  loginStarted = false;
   if (subs.groups) { subs.groups(); subs.groups = null; }
   subs.lists.forEach(u => u()); subs.lists.clear();
   subs.votes.forEach(u => u()); subs.votes.clear();
@@ -251,6 +259,21 @@ function logout(silent) {
   lsSet(LS.user, null);
   if (!silent) toast('Abgemeldet');
   render();
+}
+
+/* Gruppenmitglieder ohne Profil (z.B. nach einer abgebrochenen Anmeldung)
+   erscheinen sonst als unbekannte Person – sie werden aus der Gruppe genommen. */
+const orphanDone = new Set();
+function cleanOrphanMembers() {
+  if (!S.usersFromServer || !S.groupsLoaded) return;
+  Object.entries(S.groups).forEach(([gid, g]) => {
+    (g.members || []).forEach(uid => {
+      const key = gid + '/' + uid;
+      if (S.users[uid] || orphanDone.has(key)) return;
+      orphanDone.add(key);
+      DB.leaveGroup(gid, uid).catch(e => console.warn('Aufräumen', key, e));
+    });
+  });
 }
 
 /* Listen aller Personen abonnieren, die man sehen muss: ich + Mitglieder meiner Gruppen */
@@ -320,6 +343,8 @@ function submitLogin() {
   if (!S.usersLoaded) { toast('Noch nicht verbunden – bitte kurz warten.', true); return; }
   const found = findUserByName(name);
   if (found) { loginAs(found[0]); return; }
+  // Erst ein neues Profil anbieten, wenn die Profilliste sicher vom Server kommt (sonst Doppelprofile)
+  if (!S.usersFromServer) { toast('Verbinde mit der Datenbank … bitte nochmals tippen.', true); return; }
   S.loginPending = name;
   renderLogin();
 }
@@ -349,7 +374,7 @@ function renderLogin() {
   } else {
     box.classList.add('hidden');
   }
-  const known = Object.entries(S.users).sort((a, b) => a[1].name.localeCompare(b[1].name, 'de'));
+  const known = Object.entries(S.users).filter(([, u]) => u && u.name).sort((a, b) => a[1].name.localeCompare(b[1].name, 'de'));
   $('login-known').innerHTML = known.length
     ? '<span class="muted">Schon dabei:</span> ' +
       known.map(([uid, u]) => '<button type="button" class="chip" data-action="login-as" data-uid="' + esc(uid) + '">' + esc(u.name) + '</button>').join('')

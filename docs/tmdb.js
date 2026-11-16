@@ -11,7 +11,7 @@
  *          dann Deutsch, dann irgendeiner.
  * FSK:     Altersfreigabe Deutschland (sonst Schweiz), z.B. 12.
  */
-import { fskFromReleaseDates } from './logic.js';
+import { fskFromReleaseDates } from './logic.js?v=__V__';
 
 const BASE = 'https://api.themoviedb.org/3';
 const IMG = 'https://image.tmdb.org/t/p/';

@@ -58,8 +58,13 @@ function watchQuery(q, cb, onError) {
 }
 
 /* ---------- Abos (live) ---------- */
+/* cb(users, fromCache): fromCache = noch nicht vom Server bestätigt (lokaler Zwischenspeicher) */
 export function watchUsers(cb, onError) {
-  return watchQuery(fs.collection(db, 'users'), cb, onError);
+  return fs.onSnapshot(fs.collection(db, 'users'), { includeMetadataChanges: true }, snap => {
+    const out = {};
+    snap.forEach(x => { out[x.id] = x.data(); });
+    cb(out, !!(snap.metadata && snap.metadata.fromCache));
+  }, onError);
 }
 
 export function watchMovies(cb, onError) {

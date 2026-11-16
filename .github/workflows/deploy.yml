@@ -32,6 +32,13 @@ jobs:
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
+      # Versionsstempel: alle Dateien einer Version gehören zusammen
+      # (verhindert, dass der Browser nach einem Update alte und neue Dateien mischt)
+      - name: Stamp version
+        run: |
+          V="${GITHUB_SHA::7}"
+          sed -i "s/__V__/$V/g" docs/index.html docs/*.js
+
       - name: Upload docs folder
         uses: actions/upload-pages-artifact@v3
         with:
