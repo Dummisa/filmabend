@@ -541,6 +541,19 @@ body.in-group .group-only { display: flex; }
 .type-radio:has(input:checked) { border-color: var(--accent); background: var(--accent-soft); }
 .type-radio input { accent-color: var(--accent); }
 
+/* Rangfolge und Zeitplan */
+.ranked-row { display: flex; align-items: center; gap: 8px; }
+.ranked-row .vrow { flex: 1; min-width: 0; border: 1px solid var(--border); border-radius: 10px; background: var(--row); margin-bottom: 6px; }
+.ranked-row > .rank { margin-bottom: 6px; }
+.rank.r4 { background: var(--accent); border-color: var(--accent); }
+.rank-slot { width: 30px; height: 30px; flex: none; }
+.ballot.full .vrow { opacity: 0.55; }
+.vrow .btn.icon:disabled { visibility: hidden; }
+.schedule { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.schedule label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--muted); }
+.schedule input { width: 100%; }
+.schedule-line { margin-top: 8px; font-size: 0.82rem; color: #fde68a; line-height: 1.5; }
+
 /* ---------- Mobil ---------- */
 @media (max-width: 560px) {
   body { padding: 16px 12px 48px; }
@@ -557,6 +570,8 @@ body.in-group .group-only { display: flex; }
   .overlay { align-items: flex-end; padding: 0; }
   .sheet { max-width: none; border-radius: 16px 16px 0 0; max-height: 85vh; padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
   .methods { grid-template-columns: 1fr; }
+  .schedule { grid-template-columns: 1fr; }
+  .ranked-row .vact .btn.icon { padding: 5px 7px; }
   .group-head { flex-direction: column; align-items: stretch; }
   .gh-actions .btn { flex: 1; }
   .gh-actions .btn[data-action="rename-group"] { flex: 0 0 auto; }
