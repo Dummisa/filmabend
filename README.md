@@ -174,13 +174,20 @@ markiert wurden, mit Datum, wer es eingetragen hat und wer ihn gesehen hat.
    Länge höchstens · FSK höchstens · Genres · *schon gesehen*: egal / von
    niemandem / von höchstens N Personen / nicht von bestimmten Leuten.
    Die Seite zeigt sofort, wie viele Filme der Liste passen.
+   Optional ein **Zeitplan**: *Nominieren bis* (dann startet die Abstimmung
+   automatisch, sofern mind. 2 Titel nominiert sind) und *Abstimmung endet*
+   (dann wird automatisch ausgezählt). Die Abstimmung zeigt einen Countdown.
+   Weitergeschaltet wird vom ersten Gerät, das die Seite nach Ablauf offen hat.
 2. **Nominieren:** Jede Person nominiert passende Filme aus der Liste (eigene
    Nominierungen lassen sich zurückziehen). Danach **Weiter zur Abstimmung**
    (ab 2 nominierten Filmen).
 3. **Abstimmen**, je nach Art:
    - *Zustimmung*: alle Filme anhaken, die okay sind – meiste Häkchen gewinnt.
    - *Eine Stimme*: genau einen Film wählen.
-   - *Rangfolge*: Platz 1, 2, 3 antippen (3, 2, 1 Punkte).
+   - *Rangfolge*: Filme der Reihe nach antippen – sie wandern nach oben in
+     „Deine Rangliste“, mit ▲▼ umsortierbar, ✕ nimmt sie wieder heraus. Die
+     Anzahl Plätze legt die Abstimmung fest (3, 5, eigene Zahl oder alle
+     Nominierten); Platz 1 bekommt so viele Punkte, wie es Plätze gibt.
    Man sieht, wer schon abgestimmt hat, aber nicht wofür.
 4. **Auszählen & beenden:** Gewinner mit Trailer-Button und Punkte-Balken.
    Bei Gleichstand entscheidet das Los. Frühere Abstimmungen bleiben als

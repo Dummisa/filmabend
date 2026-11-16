@@ -172,7 +172,7 @@ export function applyFilters(entries, f, nameOf) {
 export const METHODS = {
   approval: { label: 'Zustimmung', hint: 'Jede Person hakt alle Filme an, die für sie okay sind. Meiste Häkchen gewinnt.' },
   single:   { label: 'Eine Stimme', hint: 'Jede Person wählt genau einen Film. Meiste Stimmen gewinnt.' },
-  ranked:   { label: 'Rangfolge',   hint: 'Jede Person wählt Platz 1–3 (3, 2, 1 Punkte). Meiste Punkte gewinnt.' }
+  ranked:   { label: 'Rangfolge',   hint: 'Jede Person ordnet ihre Favoriten. Platz 1 bekommt am meisten Punkte, der letzte Platz 1 Punkt.' }
 };
 
 export function emptyConditions() {
@@ -235,37 +235,56 @@ export function nominationLimitText(max) {
 }
 
 /* Stimmzettel bereinigen: nur Nominierte, keine Doppelten, je nach Methode begrenzt */
-export function cleanBallot(method, ids, nominees) {
+/* Wie viele Plätze werden bei "Rangfolge" vergeben?
+   rankCount: Zahl (Standard 3 – auch für ältere Abstimmungen), 0 = alle Nominierten */
+export function rankLimit(rankCount, nomineeCount) {
+  const want = rankCount === 0 ? nomineeCount : (rankCount || 3);
+  return Math.max(0, Math.min(want, nomineeCount));
+}
+
+/* Stimmzettel bereinigen: nur Nominierte, keine Doppelten, je nach Methode begrenzt */
+export function cleanBallot(method, ids, nominees, rankCount) {
   const allowed = new Set(nominees.map(K));
   const out = [];
   (ids || []).forEach(id => { id = K(id); if (allowed.has(id) && !out.includes(id)) out.push(id); });
   if (method === 'single') return out.slice(0, 1);
-  if (method === 'ranked') return out.slice(0, Math.min(3, nominees.length));
+  if (method === 'ranked') return out.slice(0, rankLimit(rankCount, nominees.length));
   return out;
 }
 
 /* Tippen auf einen Film im Stimmzettel → neuer Stimmzettel */
-export function toggleBallot(method, ballot, id, nominees) {
+export function toggleBallot(method, ballot, id, nominees, rankCount) {
   const cur = (ballot || []).map(K);
   id = K(id);
   let next;
   if (method === 'single') next = cur[0] === id ? [] : [id];
   else if (cur.includes(id)) next = cur.filter(x => x !== id);       // abwählen (Rangfolge rückt nach)
-  else if (method === 'ranked' && cur.length >= Math.min(3, nominees.length)) next = cur;  // schon 3 Plätze
+  else if (method === 'ranked' && cur.length >= rankLimit(rankCount, nominees.length)) next = cur;  // alle Plätze vergeben
   else next = cur.concat(id);
-  return cleanBallot(method, next, nominees);
+  return cleanBallot(method, next, nominees, rankCount);
 }
 
-/* Punkte zählen. Ergebnis: Rangliste [{id, score, votes}] absteigend */
+/* Rangfolge: einen Film einen Platz nach oben (-1) oder unten (+1) schieben */
+export function moveInBallot(ballot, id, dir) {
+  const cur = (ballot || []).map(K);
+  const i = cur.indexOf(K(id)), j = i + dir;
+  if (i < 0 || j < 0 || j >= cur.length) return cur;
+  [cur[i], cur[j]] = [cur[j], cur[i]];
+  return cur;
+}
+
+/* Punkte zählen. Rangfolge: Platz 1 bekommt so viele Punkte, wie es Plätze gibt,
+   der letzte Platz 1 Punkt. Ergebnis: Rangliste [{id, score, votes}] absteigend */
 export function tally(vote) {
   const nominees = nominatedIds(vote);
+  const limit = rankLimit(vote.rankCount, nominees.length);
   const scores = {}, votes = {};
   nominees.forEach(id => { scores[id] = 0; votes[id] = 0; });
   const ballots = vote.ballots || {};
   Object.keys(ballots).forEach(uid => {
-    const b = cleanBallot(vote.method, ballots[uid], nominees);
+    const b = cleanBallot(vote.method, ballots[uid], nominees, vote.rankCount);
     b.forEach((id, i) => {
-      const pts = vote.method === 'ranked' ? 3 - i : 1;
+      const pts = vote.method === 'ranked' ? limit - i : 1;
       scores[id] += pts;
       votes[id] += 1;
     });
@@ -274,6 +293,39 @@ export function tally(vote) {
     .map(id => ({ id, score: scores[id], votes: votes[id] }))
     .sort((a, b) => b.score - a.score || b.votes - a.votes || String(a.id).localeCompare(String(b.id)));
   return { ranking, voterCount: Object.keys(ballots).filter(uid => (ballots[uid] || []).length).length };
+}
+
+/* Zufall, der auf allen Geräten gleich ausfällt (z.B. Gleichstand bei
+   automatischem Ende) – abgeleitet von einem Text wie der Abstimmungs-ID */
+export function seededRandom(seed) {
+  let h = 2166136261;
+  for (const ch of String(seed)) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+  return () => {
+    h += 0x6D2B79F5;
+    let t = h;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/* Fällige Phase einer Abstimmung nach Zeitplan:
+   'vote' = Nominierung vorbei → Abstimmung starten, 'close' = Abstimmung vorbei → auszählen */
+export function dueStep(vote, now) {
+  if (vote.status === 'nominate' && vote.nominateUntil && now >= vote.nominateUntil) return 'vote';
+  if (vote.status === 'vote' && vote.voteUntil && now >= vote.voteUntil) return 'close';
+  return null;
+}
+
+/* Restzeit lesbar: "2 Tage 3 h", "1 h 05 min", "4 min", "weniger als 1 min" */
+export function remaining(ms) {
+  if (ms <= 0) return 'abgelaufen';
+  const min = Math.floor(ms / 60000);
+  if (min < 1) return 'weniger als 1 min';
+  const d = Math.floor(min / 1440), h = Math.floor((min % 1440) / 60), m = min % 60;
+  if (d) return d + (d === 1 ? ' Tag' : ' Tage') + (h ? ' ' + h + ' h' : '');
+  if (h) return h + ' h' + (m ? ' ' + String(m).padStart(2, '0') + ' min' : '');
+  return m + ' min';
 }
 
 /* Gewinner bestimmen; bei Gleichstand entscheidet der Zufall */

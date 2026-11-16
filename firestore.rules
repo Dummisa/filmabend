@@ -68,14 +68,16 @@ service cloud.firestore {
       match /votes/{voteId} {
         allow read: if signedIn();
         allow create, update: if signedIn()
-          && data().keys().hasOnly(['title', 'createdBy', 'createdAt', 'status', 'method', 'maxNominations',
-                                    'conditions', 'nominations', 'ballots', 'result', 'closedAt'])
+          && data().keys().size() <= 25
           && str(data().title, 60)
           && data().status in ['nominate', 'vote', 'closed']
           && data().method in ['approval', 'single', 'ranked']
           && data().maxNominations is int && data().maxNominations >= 0 && data().maxNominations <= 100
           && data().nominations is map && data().nominations.size() <= 100
-          && data().ballots is map && data().ballots.size() <= 30;
+          && data().ballots is map && data().ballots.size() <= 30
+          && (!('rankCount' in data()) || data().rankCount == null || (data().rankCount is int && data().rankCount >= 0 && data().rankCount <= 100))
+          && (!('nominateUntil' in data()) || data().nominateUntil == null || data().nominateUntil is int)
+          && (!('voteUntil' in data()) || data().voteUntil == null || data().voteUntil is int);
         allow delete: if signedIn();
       }
 

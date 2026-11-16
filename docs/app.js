@@ -965,7 +965,8 @@ function currentGroupEntries() {
 function newVoteForm() {
   return {
     title: 'Filmabend ' + new Date().toLocaleDateString('de-CH'),
-    method: 'approval', maxNominations: 2, types: 'all',
+    method: 'approval', maxNominations: 2, types: 'all', rankCount: 3,
+    nominateUntil: '', voteUntil: '',
     maxRuntime: null, maxFsk: null, genres: [],
     seenMode: 'any', seenMax: 1, notBy: []
   };
@@ -985,8 +986,15 @@ async function startVote() {
   if (!g || !f) return;
   const title = (f.title || '').trim() || 'Filmabend';
   if (activeVote(S.space)) { toast('Es läuft schon eine Abstimmung.', true); return; }
+  const toMs = str => { if (!str) return null; const t = new Date(str).getTime(); return Number.isFinite(t) ? t : null; };
+  const nominateUntil = toMs(f.nominateUntil), voteUntil = toMs(f.voteUntil);
+  const now = Date.now();
+  if ((nominateUntil && nominateUntil <= now) || (voteUntil && voteUntil <= now)) { toast('Die Zeiten müssen in der Zukunft liegen.', true); return; }
+  if (nominateUntil && voteUntil && voteUntil <= nominateUntil) { toast('Die Abstimmung muss nach dem Ende der Nominierung enden.', true); return; }
   try {
     await DB.createVote(S.space, {
+      rankCount: f.method === 'ranked' ? f.rankCount : null,
+      nominateUntil, voteUntil,
       title: title.slice(0, 60),
       createdBy: S.userId,
       createdAt: Date.now(),
@@ -1019,16 +1027,37 @@ async function toVotePhase(v) {
   catch (e) { fail(e); }
 }
 
+/* Nominierte in fester Reihenfolge (alphabetisch) – sonst springen sie herum */
+function sortedNominees(v) {
+  return L.nominatedIds(v).filter(id => S.movies[id])
+    .sort((a, b) => titleOf(S.movies[a]).localeCompare(titleOf(S.movies[b]), 'de'));
+}
+
 async function castBallot(v, id) {
   const nominees = L.nominatedIds(v);
   const cur = (v.ballots || {})[S.userId] || [];
-  const next = L.toggleBallot(v.method, cur, id, nominees);
-  if (v.method === 'ranked' && next.length === cur.length && !cur.includes(id)) {
-    toast('Du hast schon ' + next.length + ' Plätze vergeben – tippe einen an, um ihn zu entfernen.');
+  const next = L.toggleBallot(v.method, cur, id, nominees, v.rankCount);
+  if (v.method === 'ranked' && next.length === cur.length && !cur.map(L.K).includes(L.K(id))) {
+    toast('Alle ' + next.length + ' Plätze sind vergeben – nimm zuerst einen Film aus deiner Rangliste.');
     return;
   }
   try { await DB.setBallot(S.space, v.id, S.userId, next); }
   catch (e) { fail(e); }
+}
+
+async function moveBallot(v, id, dir) {
+  const next = L.moveInBallot((v.ballots || {})[S.userId] || [], id, dir);
+  try { await DB.setBallot(S.space, v.id, S.userId, next); }
+  catch (e) { fail(e); }
+}
+
+/* Auszählen und Ergebnis speichern. Gleichstand: "Zufall" aus der Abstimmungs-ID,
+   damit alle Geräte (auch beim automatischen Ende) dasselbe Ergebnis erhalten. */
+function finishVote(gid, v) {
+  const { ranking } = L.tally(v);
+  const { winner, tie } = L.decideWinner(ranking, L.seededRandom(v.id));
+  return DB.updateVote(gid, v.id, { status: 'closed', closedAt: Date.now(), result: { winner, tie, ranking } })
+    .then(() => winner);
 }
 
 async function closeVote(v) {
@@ -1039,16 +1068,28 @@ async function closeVote(v) {
     ? 'Noch nicht abgestimmt: <b>' + esc(namesList(missing)) + '</b>. Trotzdem auszählen?'
     : 'Alle haben abgestimmt. Jetzt auszählen?';
   if (!await uiConfirm(text, 'Auszählen')) return;
-  const { ranking } = L.tally(v);
-  const { winner, tie } = L.decideWinner(ranking);
   try {
-    await DB.updateVote(S.space, v.id, {
-      status: 'closed',
-      closedAt: Date.now(),
-      result: { winner, tie, ranking }
-    });
+    const winner = await finishVote(S.space, v);
     if (winner) toast('🏆 ' + titleOf(S.movies[winner]));
   } catch (e) { fail(e); }
+}
+
+/* Zeitplan: abgelaufene Phasen weiterschalten (macht das erste Gerät, das die Seite offen hat) */
+const deadlineBusy = new Set();
+function checkDeadlines() {
+  const now = Date.now();
+  Object.keys(S.groups).forEach(gid => {
+    Object.entries(S.votes[gid] || {}).forEach(([vid, raw]) => {
+      const v = Object.assign({ id: vid }, raw);
+      const step = L.dueStep(v, now);
+      const key = gid + '/' + vid + '/' + step;
+      if (!step || deadlineBusy.has(key)) return;
+      if (step === 'vote' && L.nominatedIds(v).length < 2) return;   // zu wenig Filme – bleibt offen
+      deadlineBusy.add(key);
+      const done = step === 'vote' ? DB.updateVote(gid, vid, { status: 'vote' }) : finishVote(gid, v);
+      done.catch(e => { console.warn('Zeitplan', e); deadlineBusy.delete(key); });
+    });
+  });
 }
 
 async function deleteVote(v) {
@@ -1095,8 +1136,17 @@ function render() {
   if (isVote) renderVoteView(); else renderListView();
 
   initMyShares();
+  checkDeadlines();
   setTimeout(checkInbox, 0);
 }
+
+/* Zeitpläne: alle 20 s prüfen und Countdown aktualisieren */
+setInterval(() => {
+  if (!S.userId || !S.groupsLoaded) return;
+  checkDeadlines();
+  const v = currentGroup() && activeVote(S.space);
+  if (v && (v.nominateUntil || v.voteUntil) && S.tab.group === 'vote' && $('dialog').classList.contains('hidden')) render();
+}, 20000);
 
 function renderSpaces() {
   const pills = [];
@@ -1453,9 +1503,10 @@ function renderVoteCard(v, g, compact) {
   const head =
     '<div class="vhead">' +
       '<div><h3>' + esc(v.title) + '</h3>' +
-        '<div class="muted small">' + esc(method.label) + ' · gestartet von ' + esc(nameOf(v.createdBy)) + ' am ' + fmtDate(v.createdAt) +
+        '<div class="muted small">' + esc(method.label) + (v.method === 'ranked' ? (v.rankCount === 0 ? ' (alle Plätze)' : ' (' + (v.rankCount || 3) + ' Plätze)') : '') + ' · gestartet von ' + esc(nameOf(v.createdBy)) + ' am ' + fmtDate(v.createdAt) +
         (v.status !== 'closed' ? ' · ' + L.nominationLimitText(v.maxNominations) : '') + '</div>' +
         (conds.length ? '<div class="conds">' + conds.map(c => '<span class="cond">' + esc(c) + '</span>').join('') + '</div>' : '') +
+        (compact ? '' : scheduleLine(v)) +
       '</div>' +
       (compact ? '' : '<div class="phases">' + phases.map((p, i) =>
         '<span class="phase' + (i === phaseIdx ? ' active' : i < phaseIdx ? ' done' : '') + '">' + p[1] + '</span>').join('') + '</div>') +
@@ -1483,7 +1534,7 @@ function renderNominate(v, g) {
   const can = L.canNominate(v, S.userId);
   const byId = new Map(entries.map(e => [e.id, e]));
 
-  const nomRows = nominated.map(id => {
+  const nomRows = nominated.slice().sort((a, b) => titleOf(S.movies[a]).localeCompare(titleOf(S.movies[b]), 'de')).map(id => {
     const m = S.movies[id];
     if (!m) return '';
     const by = v.nominations[L.mkey(id)];
@@ -1517,28 +1568,69 @@ function renderNominate(v, g) {
       (candRows || '<p class="muted small">Keine (weiteren) Filme passen zu den Bedingungen.</p>') + '</div>';
 }
 
+function fmtDateTime(ms) {
+  return new Date(ms).toLocaleString('de-CH', { weekday: 'short', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+}
+
+/* Zeitplan-Zeile im Kopf einer Abstimmung */
+function scheduleLine(v) {
+  const now = Date.now();
+  const bits = [];
+  if (v.status === 'nominate' && v.nominateUntil) {
+    if (now < v.nominateUntil) bits.push('⏰ Nominieren bis ' + fmtDateTime(v.nominateUntil) + ' <b>(noch ' + L.remaining(v.nominateUntil - now) + ')</b> – danach startet die Abstimmung automatisch');
+    else bits.push('⏰ Nominierungszeit abgelaufen' + (L.nominatedIds(v).length < 2 ? ' – zu wenig Filme, bitte manuell weiter' : ' – Abstimmung startet …'));
+  }
+  if (v.status !== 'closed' && v.voteUntil) {
+    if (now < v.voteUntil) bits.push('🗳 Abstimmung endet ' + fmtDateTime(v.voteUntil) + (v.status === 'vote' ? ' <b>(noch ' + L.remaining(v.voteUntil - now) + ')</b>' : '') + ' – dann wird automatisch ausgezählt');
+    else if (v.status === 'vote') bits.push('⏰ Abstimmungszeit abgelaufen – wird ausgezählt …');
+  }
+  return bits.length ? '<div class="schedule-line">' + bits.join('<br>') + '</div>' : '';
+}
+
 function renderBallot(v, g) {
-  const nominees = L.nominatedIds(v);
-  const mine = ((v.ballots || {})[S.userId] || []).map(L.K);
-  const hint = v.method === 'approval' ? 'Tippe alle Filme an, die für dich okay sind.'
-    : v.method === 'single' ? 'Tippe den einen Film an, den du am liebsten sehen willst.'
-    : 'Tippe deine Favoriten der Reihe nach an: zuerst Platz 1 (3 Punkte), dann 2 (2), dann 3 (1). Nochmals tippen entfernt.';
-  const rows = nominees.map(id => {
-    const m = S.movies[id];
-    if (!m) return '';
-    const pos = mine.indexOf(id);
-    let mark;
-    if (v.method === 'ranked') mark = pos >= 0 ? '<span class="rank r' + (pos + 1) + '">' + (pos + 1) + '</span>' : '<span class="rank empty">–</span>';
-    else if (v.method === 'single') mark = '<span class="radio' + (pos >= 0 ? ' on' : '') + '"></span>';
-    else mark = '<span class="check' + (pos >= 0 ? ' on' : '') + '">' + (pos >= 0 ? '✓' : '') + '</span>';
-    return miniMovie(m, 'nominiert von ' + esc(nameOf(v.nominations[L.mkey(id)])), trailerMini(id) + mark,
-      ' data-action="vote-ballot" data-vote="' + v.id + '" data-id="' + id + '" role="button" tabindex="0"');
-  }).join('');
+  const nominees = sortedNominees(v);
+  const mine = L.cleanBallot(v.method, (v.ballots || {})[S.userId] || [], L.nominatedIds(v), v.rankCount);
+  const by = id => 'nominiert von ' + esc(nameOf(v.nominations[L.mkey(id)]));
+  let body;
+
+  if (v.method === 'ranked') {
+    const limit = L.rankLimit(v.rankCount, nominees.length);
+    const ranked = mine.filter(id => S.movies[id]);
+    const rest = nominees.filter(id => !ranked.includes(id));
+    const full = ranked.length >= limit;
+    const rankedRows = ranked.map((id, i) => {
+      const ctrl =
+        '<button type="button" class="btn icon" data-action="ballot-up" data-vote="' + v.id + '" data-id="' + id + '"' + (i === 0 ? ' disabled' : '') + ' aria-label="Nach oben">▲</button>' +
+        '<button type="button" class="btn icon" data-action="ballot-down" data-vote="' + v.id + '" data-id="' + id + '"' + (i === ranked.length - 1 ? ' disabled' : '') + ' aria-label="Nach unten">▼</button>' +
+        '<button type="button" class="btn icon" data-action="vote-ballot" data-vote="' + v.id + '" data-id="' + id + '" aria-label="Aus der Rangliste nehmen" title="Aus der Rangliste nehmen">✕</button>';
+      return '<div class="ranked-row">' +
+        '<span class="rank r' + Math.min(i + 1, 4) + '">' + (i + 1) + '</span>' +
+        miniMovie(S.movies[id], (limit - i) + (limit - i === 1 ? ' Punkt' : ' Punkte'), trailerMini(id) + ctrl) + '</div>';
+    }).join('');
+    const restRows = rest.map(id => miniMovie(S.movies[id], by(id), trailerMini(id) + '<span class="rank-slot"></span>',
+      full ? '' : ' data-action="vote-ballot" data-vote="' + v.id + '" data-id="' + id + '" role="button" tabindex="0"')).join('');
+    body =
+      '<p class="muted small vhint">Tippe Filme in der Reihenfolge an, wie gerne du sie sehen willst – sie wandern nach oben in deine Rangliste. ' +
+        'Mit ▲▼ umsortieren, ✕ nimmt einen wieder heraus. ' + (limit === nominees.length ? 'Ordne alle ' + limit + ' Filme.' : limit + ' Plätze: Platz 1 = ' + limit + ' Punkte.') + '</p>' +
+      '<div class="vsec"><div class="vsec-title">Deine Rangliste <span class="count">' + ranked.length + ' / ' + limit + '</span></div>' +
+        (rankedRows || '<p class="muted small">Noch leer – tippe unten deinen Favoriten an.</p>') + '</div>' +
+      (rest.length ? '<div class="vsec ballot' + (full ? ' full' : '') + '"><div class="vsec-title">' + (full ? 'Nicht eingeordnet' : 'Zur Auswahl') + '</div>' + restRows + '</div>' : '');
+  } else {
+    const hint = v.method === 'approval' ? 'Tippe alle Filme an, die für dich okay sind.' : 'Tippe den einen Film an, den du am liebsten sehen willst.';
+    const rows = nominees.map(id => {
+      const on = mine.includes(id);
+      const mark = v.method === 'single' ? '<span class="radio' + (on ? ' on' : '') + '"></span>'
+        : '<span class="check' + (on ? ' on' : '') + '">' + (on ? '✓' : '') + '</span>';
+      return miniMovie(S.movies[id], by(id), trailerMini(id) + mark,
+        ' data-action="vote-ballot" data-vote="' + v.id + '" data-id="' + id + '" role="button" tabindex="0"');
+    }).join('');
+    body = '<p class="muted small vhint">' + hint + '</p><div class="vsec ballot">' + rows + '</div>';
+  }
 
   const voted = (g.members || []).filter(uid => ((v.ballots || {})[uid] || []).length);
   const open = (g.members || []).filter(uid => !voted.includes(uid));
-  return '<p class="muted small vhint">' + hint + ' Das Ergebnis siehst du nach dem Auszählen.</p>' +
-    '<div class="vsec ballot">' + rows + '</div>' +
+  return body +
+    '<p class="muted small">Das Ergebnis siehst du nach dem Auszählen.</p>' +
     '<div class="voters">' +
       voted.map(uid => '<span class="person seen">✓ ' + esc(nameOf(uid)) + '</span>').join('') +
       open.map(uid => '<span class="person waiting">… ' + esc(nameOf(uid)) + '</span>').join('') +
@@ -1609,6 +1701,20 @@ function renderVoteForm() {
       '<input type="number" id="form-maxnom" class="nom-input' + (f.maxNominations > 5 ? ' active' : '') + '" min="1" max="100" inputmode="numeric" placeholder="andere" aria-label="Andere Anzahl" value="' + (f.maxNominations > 5 ? f.maxNominations : '') + '">' +
       opt('maxNominations', 0, '∞ Unbegrenzt', f.maxNominations === 0) + '</div>' +
 
+    (f.method === 'ranked'
+      ? '<div class="fl">Plätze pro Person <span class="muted small">(Platz 1 bekommt so viele Punkte, wie es Plätze gibt)</span></div>' +
+        '<div class="chips nom-chips">' + [3, 5].map(n => opt('rankCount', n, String(n), f.rankCount === n)).join('') +
+          '<input type="number" id="form-ranks" class="nom-input' + (f.rankCount && f.rankCount !== 3 && f.rankCount !== 5 ? ' active' : '') + '" min="1" max="100" inputmode="numeric" placeholder="andere" aria-label="Andere Anzahl Plätze" value="' +
+            (f.rankCount && f.rankCount !== 3 && f.rankCount !== 5 ? f.rankCount : '') + '">' +
+          opt('rankCount', 0, 'Alle Nominierten', f.rankCount === 0) + '</div>'
+      : '') +
+
+    '<div class="fl">Zeitplan <span class="muted small">(optional – leer lassen zum manuellen Weiterschalten)</span></div>' +
+    '<div class="schedule">' +
+      '<label>Nominieren bis / Abstimmung startet<input type="datetime-local" id="form-nomuntil" value="' + esc(f.nominateUntil) + '"></label>' +
+      '<label>Abstimmung endet<input type="datetime-local" id="form-voteuntil" value="' + esc(f.voteUntil) + '"></label>' +
+    '</div>' +
+
     '<h3 class="fsub">Bedingungen <span class="muted small">(optional)</span></h3>' +
     ((g.type || 'movie') === 'mixed'
       ? '<div class="fl">Art</div><div class="chips">' +
@@ -1659,7 +1765,7 @@ function updateFormCount() {
 
 function parseFormValue(key, raw) {
   if (['maxRuntime', 'maxFsk'].includes(key)) return raw === 'null' || raw === '' ? null : Number(raw);
-  if (['maxNominations', 'seenMax'].includes(key)) return Number(raw);
+  if (['maxNominations', 'seenMax', 'rankCount'].includes(key)) return Number(raw);
   return raw;
 }
 
@@ -1814,6 +1920,16 @@ function initStaticUi() {
   // Titel im Abstimmungsformular mitschreiben
   document.addEventListener('input', e => {
     if (e.target.id === 'form-title' && S.form) S.form.title = e.target.value;
+    if (e.target.id === 'form-nomuntil' && S.form) S.form.nominateUntil = e.target.value;
+    if (e.target.id === 'form-voteuntil' && S.form) S.form.voteUntil = e.target.value;
+    if (e.target.id === 'form-ranks' && S.form) {
+      const n = Math.round(Number(e.target.value));
+      if (n >= 1 && n <= 100) {
+        S.form.rankCount = n;
+        e.target.closest('.nom-chips').querySelectorAll('.chip').forEach(c => c.classList.toggle('active', Number(c.dataset.value) === n));
+        e.target.classList.toggle('active', n !== 3 && n !== 5);
+      }
+    }
     if (e.target.id === 'form-maxnom' && S.form) {
       const n = Math.round(Number(e.target.value));
       if (n >= 1 && n <= 100) {
@@ -1932,6 +2048,8 @@ function onClick(ev) {
     case 'vote-unnominate': nominate(vote, id, false); break;
     case 'vote-next': toVotePhase(vote); break;
     case 'vote-ballot': castBallot(vote, id); break;
+    case 'ballot-up': moveBallot(vote, id, -1); break;
+    case 'ballot-down': moveBallot(vote, id, 1); break;
     case 'vote-close': closeVote(vote); break;
     case 'vote-delete': deleteVote(vote); break;
   }
