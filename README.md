@@ -113,7 +113,19 @@ Nach ein bis zwei Minuten ist die neue Version unter
 sonst fragt die Seite, ob ein neues Profil angelegt werden soll. Das Gerät
 merkt sich das. Profil wechseln: **👤 Name → Profil wechseln**.
 
-**Meine Liste:** Tabs *Watchlist* (privat) und *Gesehen*.
+**Meine Liste:** Tabs *Watchlist* (privat) und *Gesehen*. Bei gesehenen Filmen
+setzt **🔁 Rewatch** den Film wieder auf die Watchlist (auf Wunsch auch in
+Gruppen) – er bleibt dabei unter *Gesehen* und ist mit „🔁 Rewatch“ markiert.
+In Gruppen steht dann „🔁 Name“ bei *Will sehen*.
+
+**Filme und Serien:** Die Suche findet beides (Serien mit 📺). Serien zeigen
+Staffeln, Folgen und Folgenlänge; „gesehen“ gilt für die ganze Serie. Jede
+Gruppe hat eine Art – *Nur Filme* (Standard, auch für bestehende Gruppen),
+*Nur Serien* oder *Gemischt* – wählbar beim Erstellen und über ✏️. Serien
+landen nur in Gruppen, die Serien erlauben. Sind Filme und Serien gemischt,
+erscheint der Filter *Art*. Der Längenfilter und die Längen-Bedingung gelten
+nur für Filme; in gemischten Gruppen kann eine Abstimmung auf Filme oder
+Serien beschränkt werden. Fortsetzungen werden nur für Filme angeboten.
 
 **Film hinzufügen:** Titel eintippen, Treffer antippen. Bist du in Gruppen,
 fragt die Seite, **auf welche Listen** er soll: deine private Liste und/oder
@@ -144,7 +156,16 @@ wird er von der gemeinsamen Liste genommen. Alle anderen dort, die ihn
 wollten, werden beim nächsten Öffnen der Seite gefragt:
 *„Ich war dabei“* (→ gesehen) · *behalten* (→ bleibt bzw. kommt auf die private
 Liste, nur nicht mehr in der Gruppe – z.B. wenn jemand nicht dabei war) ·
-*entfernen*.
+*entfernen*. Wer einen Film als *Rewatch* auf der Liste hat, wird ebenfalls gefragt.
+
+**Fortsetzungen:** Gehört ein gesehener Film zu einer Filmreihe (laut TMDB),
+fragt die Seite, ob der nächste Teil auf die Liste soll – die Gruppe, mit der
+du ihn geschaut hast, ist dabei vorausgewählt. Auch angekündigte Teile werden
+angeboten (mit Erscheinungsdatum).
+
+**Gruppe → Gesehen:** zeigt alle Filme, die als „mit dieser Gruppe gesehen“
+markiert wurden, mit Datum, wer es eingetragen hat und wer ihn gesehen hat.
+**✕** entfernt einen Eintrag aus diesem Verlauf.
 
 **Abstimmung** (Tab in der Gruppe; 🗳 an der Gruppe zeigt, dass eine läuft,
 🔴 dass du noch etwas tun musst):

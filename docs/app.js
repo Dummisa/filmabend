@@ -34,6 +34,7 @@ const S = {
   lists: {},                 // uid → { watch, seen }
   groups: {}, groupsLoaded: false,
   votes: {},                 // groupId → { voteId: vote }
+  watched: {},               // groupId → { tmdbId: {movieId, at, by} }
   space: lsGet(LS.space) || 'me',
   tab: { me: 'watch', group: 'list' },
   filters: L.emptyFilters(),
@@ -46,7 +47,7 @@ const S = {
   expectGroup: null          // gerade erstellt/beigetreten, noch nicht im Abo angekommen
 };
 
-const subs = { lists: new Map(), votes: new Map(), groups: null };
+const subs = { lists: new Map(), votes: new Map(), watched: new Map(), groups: null };
 
 /* ====================================================================
    Hilfsfunktionen
@@ -83,6 +84,7 @@ const titleOf = m => (m && (m.originalTitle || m.title)) || 'Film';
 const myList = () => S.lists[S.userId] || { watch: {}, seen: {} };
 const inMyWatch = id => myList().watch[L.mkey(id)] != null;
 const inMySeen = id => myList().seen[L.mkey(id)] != null;
+const isRewatch = (list, id) => !!(list && list.rewatch && list.rewatch[L.mkey(id)] != null);
 const currentGroup = () => (S.space !== 'me' ? S.groups[S.space] : null);
 const namesList = uids => uids.map(nameOf).join(', ');
 
@@ -221,7 +223,7 @@ function start() {
 
   DB.watchMovies(movies => {
     const out = {};
-    Object.values(movies).forEach(m => { if (m && m.id) out[m.id] = m; });
+    Object.values(movies).forEach(m => { if (m && m.id) out[L.keyOf(m)] = m; });
     S.movies = out;
     S.moviesLoaded = true;
     render();
@@ -253,8 +255,9 @@ function logout(silent) {
   if (subs.groups) { subs.groups(); subs.groups = null; }
   subs.lists.forEach(u => u()); subs.lists.clear();
   subs.votes.forEach(u => u()); subs.votes.clear();
+  subs.watched.forEach(u => u()); subs.watched.clear();
   S.userId = null;
-  S.lists = {}; S.groups = {}; S.votes = {}; S.groupsLoaded = false;
+  S.lists = {}; S.groups = {}; S.votes = {}; S.watched = {}; S.groupsLoaded = false;
   S.space = 'me';
   lsSet(LS.user, null);
   if (!silent) toast('Abgemeldet');
@@ -290,12 +293,14 @@ function syncListSubs() {
 }
 
 function syncVoteSubs() {
-  subs.votes.forEach((unsub, gid) => {
-    if (!S.groups[gid]) { unsub(); subs.votes.delete(gid); delete S.votes[gid]; }
-  });
-  Object.keys(S.groups).forEach(gid => {
-    if (subs.votes.has(gid)) return;
-    subs.votes.set(gid, DB.watchVotes(gid, votes => { S.votes[gid] = votes; render(); }, onDbError));
+  [[subs.votes, S.votes, DB.watchVotes], [subs.watched, S.watched, DB.watchGroupWatched]].forEach(([map, store, watch]) => {
+    map.forEach((unsub, gid) => {
+      if (!S.groups[gid]) { unsub(); map.delete(gid); delete store[gid]; }
+    });
+    Object.keys(S.groups).forEach(gid => {
+      if (map.has(gid)) return;
+      map.set(gid, watch(gid, data => { store[gid] = data; render(); }, onDbError));
+    });
   });
 }
 
@@ -311,8 +316,8 @@ async function backfillFsk() {
       if (fskDone >= 60) break;                      // pro Seitenaufruf begrenzt
       fskDone++;
       try {
-        const fsk = await TMDB.fsk(m.id);
-        await DB.saveMovie({ id: m.id, title: m.title || titleOf(m), fsk, fskChecked: true });
+        const fsk = await TMDB.fsk(L.keyOf(m));
+        await DB.saveMovie({ id: m.id, type: L.typeOf(m), title: m.title || titleOf(m), fsk, fskChecked: true });
       } catch (e) { console.warn('FSK für', m.id, e); }
       await new Promise(r => setTimeout(r, 250));
     }
@@ -457,58 +462,111 @@ function finishPick(ok) {
   if (r) r(vals);
 }
 
-async function ensureMovie(id) {
-  if (!S.movies[id] || !S.movies[id].fskChecked) {
-    const d = await TMDB.details(id);
+async function ensureMovie(key) {
+  if (!S.movies[key] || !S.movies[key].fskChecked || !S.movies[key].type) {
+    const d = await TMDB.details(key);
     await DB.saveMovie(d);
-    S.movies[d.id] = Object.assign({}, S.movies[d.id], d);
+    S.movies[L.keyOf(d)] = Object.assign({}, S.movies[L.keyOf(d)], d);
   }
 }
 
 /* ---------- Hinzufügen: wohin? ---------- */
-async function addMovie(result) {
-  const id = result.id;
+/* opts: { intro (Text oben im Dialog), preselect (Gruppen-IDs), rewatch, ask (auch ohne Gruppen fragen), external (nicht aus der Suche) } */
+async function addMovie(result, opts) {
+  opts = opts || {};
+  const id = result.key || L.K(result.id);
+  const kind = { type: L.isTv(id) ? 'tv' : 'movie' };
   const gids = myGroupIds();
   const here = currentGroup() ? S.space : null;
-  closeSearch();
+  if (!opts.external) closeSearch();
   let targets;
   if (!gids.length) {
     if (inMyWatch(id)) { toast('Ist schon auf deiner Liste.'); return; }
+    if (opts.ask && !await uiConfirm((opts.intro || '') + '<p>Auf deine Liste setzen?</p>', 'Hinzufügen')) return;
     targets = ['me'];
   } else {
     const items = [{ value: 'me', label: '🔒 Meine Liste <span class="muted small">(privat)</span>', checked: true,
       disabled: inMyWatch(id), note: inMyWatch(id) ? '– schon drauf' : '' }]
-      .concat(gids.map(gid => ({
-        value: gid, label: '👥 ' + esc(gName(gid)),
-        checked: iShare(gid, id) || (here ? gid === here : true),
-        disabled: iShare(gid, id), note: iShare(gid, id) ? '– schon drin' : ''
-      })));
+      .concat(gids.map(gid => {
+        const allowed = L.groupAllows(S.groups[gid], kind);
+        return {
+          value: gid, label: '👥 ' + esc(gName(gid)),
+          checked: allowed && (iShare(gid, id) || (opts.preselect ? opts.preselect.includes(gid) : (here ? gid === here : true))),
+          disabled: !allowed || iShare(gid, id),
+          note: !allowed ? (kind.type === 'tv' ? '– nur Filme' : '– nur Serien') : iShare(gid, id) ? '– schon drin' : ''
+        };
+      }));
     if (items.every(it => it.disabled)) { toast('„' + result.title + '“ ist schon überall drin.'); return; }
-    targets = await uiPick('<h3>„' + esc(result.title) + '“ hinzufügen</h3>' +
+    targets = await uiPick((opts.intro || '<h3>„' + esc(result.title) + '“ hinzufügen</h3>') +
       '<p class="muted">Auf welche Listen? In Gruppen sehen ihn alle Mitglieder.</p>', items, 'Hinzufügen');
     if (!targets) return;
     if (!targets.length) { toast('Nichts ausgewählt.'); return; }
   }
 
   const input = $('search-input');
-  input.disabled = true;
-  $('search-hint').textContent = '„' + result.title + '“ wird hinzugefügt …';
+  if (!opts.external) {
+    input.disabled = true;
+    $('search-hint').textContent = '„' + result.title + '“ wird hinzugefügt …';
+  }
   try {
     await ensureMovie(id);
     const t = Date.now();
     const fields = {};
     if (targets.includes('me')) fields['watch.' + L.mkey(id)] = t;
+    if (opts.rewatch) fields['rewatch.' + L.mkey(id)] = t;
     targets.filter(x => x !== 'me').forEach(gid => Object.assign(fields, shareFields(S.userId, gid, id, t)));
     await DB.patchList(S.userId, fields);
     const names = targets.map(x => x === 'me' ? 'deine Liste' : '„' + gName(x) + '“');
-    toast('„' + result.title + '“ → ' + names.join(', '));
-    input.value = '';
+    toast((opts.rewatch ? '🔁 ' : '') + '„' + result.title + '“ → ' + names.join(', '));
+    if (!opts.external) input.value = '';
   } catch (e) {
     fail(e);
   } finally {
-    input.disabled = false;
-    $('search-hint').textContent = searchHint();
+    if (!opts.external) {
+      input.disabled = false;
+      $('search-hint').textContent = searchHint();
+    }
   }
+}
+
+/* ---------- Rewatch: bleibt bei "gesehen", kommt aber wieder auf die Watchlist ---------- */
+function rewatch(id, contextGid) {
+  const m = S.movies[id];
+  return addMovie({ key: id, title: titleOf(m) }, {
+    external: true, rewatch: true,
+    preselect: contextGid ? [contextGid] : [],
+    intro: '<h3>🔁 „' + esc(titleOf(m)) + '“ nochmals schauen</h3>' +
+      '<p class="muted small">Bleibt bei deinen gesehenen Filmen und kommt als „Rewatch“ wieder auf die Liste.</p>'
+  });
+}
+
+/* ---------- Fortsetzung anbieten, wenn ein Film gesehen wurde ---------- */
+async function offerSequel(id, groups) {
+  if (!TMDB.hasKey() || L.isTv(id)) return;     // Serien: keine Fortsetzungen
+  try {
+    let m = S.movies[id];
+    let cid = m && m.collectionId;
+    if (m && !m.collectionChecked) {
+      cid = await TMDB.collectionOf(id);
+      DB.saveMovie({ id: m.id, type: 'movie', title: m.title || titleOf(m), collectionId: cid, collectionChecked: true }).catch(() => {});
+    }
+    if (!cid) return;
+    const col = await TMDB.collectionParts(cid);
+    const next = L.nextInCollection(col.parts, L.tmdbId(id));
+    const nextKey = next && 'm' + next.id;
+    if (!next || inMyWatch(nextKey) || inMySeen(nextKey)) return;
+    const future = !next.release_date || next.release_date > new Date().toISOString().slice(0, 10);
+    const when = !next.release_date ? 'noch ohne Erscheinungsdatum'
+      : future ? 'erscheint am ' + new Date(next.release_date).toLocaleDateString('de-CH') : String(next.year);
+    const poster = TMDB.posterUrl(next.posterPath, 'w92');
+    const intro =
+      '<h3>➡️ Fortsetzung</h3>' +
+      '<div class="sequel">' + (poster ? '<img src="' + esc(poster) + '" alt="">' : '<span class="noposter">🎬</span>') +
+        '<div><b>' + esc(next.title) + '</b>' + (next.subtitle ? '<br><span class="muted small">' + esc(next.subtitle) + '</span>' : '') +
+        '<div class="muted small">' + esc(col.name) + ' · ' + esc(when) + '</div></div></div>' +
+      '<p>Nach „' + esc(titleOf(S.movies[id])) + '“ kommt dieser Teil. Auf die Liste setzen?</p>';
+    await addMovie({ key: nextKey, title: next.title }, { external: true, ask: true, preselect: (groups || []).filter(g => L.groupAllows(S.groups[g], { type: 'movie' })), intro });
+  } catch (e) { console.warn('Fortsetzung', e); }
 }
 
 /* ---------- Von der privaten Liste entfernen ---------- */
@@ -524,7 +582,7 @@ async function removeFromPrivate(id) {
     if (!groups) return;
   } else if (!await uiConfirm('„<b>' + esc(titleOf(m)) + '</b>“ von deiner Liste entfernen?', 'Entfernen', true)) return;
   try {
-    const fields = { ['watch.' + L.mkey(id)]: null };
+    const fields = { ['watch.' + L.mkey(id)]: null, ['rewatch.' + L.mkey(id)]: null };
     groups.forEach(gid => Object.assign(fields, shareFields(S.userId, gid, id, null)));
     await DB.patchList(S.userId, fields);
     toast('„' + titleOf(m) + '“ entfernt' + (groups.length ? ' (auch aus ' + groups.length + (groups.length > 1 ? ' Gruppen)' : ' Gruppe)') : ''));
@@ -535,13 +593,6 @@ async function removeFromSeen(id) {
   if (!await uiConfirm('„<b>' + esc(titleOf(S.movies[id])) + '</b>“ aus deinen gesehenen Filmen entfernen?', 'Entfernen', true)) return;
   try { await DB.patchList(S.userId, { ['seen.' + L.mkey(id)]: null }); toast('Entfernt'); }
   catch (e) { fail(e); }
-}
-
-async function backToList(id) {
-  try {
-    await DB.patchList(S.userId, { ['seen.' + L.mkey(id)]: null, ['watch.' + L.mkey(id)]: Date.now() });
-    toast('„' + titleOf(S.movies[id]) + '“ ist wieder auf deiner Liste');
-  } catch (e) { fail(e); }
 }
 
 /* ---------- In einer Gruppe ---------- */
@@ -584,7 +635,7 @@ async function markSeen(id, contextGid) {
     const t = Date.now();
     const k = L.mkey(id);
     // ich: gesehen, von privater Liste und allen meinen Freigaben weg
-    const mine = { ['seen.' + k]: t, ['watch.' + k]: null };
+    const mine = { ['seen.' + k]: t, ['watch.' + k]: null, ['rewatch.' + k]: null };
     myGroupIds().forEach(gid => Object.assign(mine, shareFields(S.userId, gid, id, null)));
     const perUser = new Map([[S.userId, mine]]);
     let asked = 0;
@@ -598,17 +649,19 @@ async function markSeen(id, contextGid) {
         if (!shares && !priv) return;
         const f = perUser.get(uid) || {};
         Object.assign(f, shareFields(uid, gid, id, null));
-        if ((l.seen || {})[k] == null && !Object.keys(f).some(x => x.startsWith('inbox.') && f[x].movieId === id)) {
-          f['inbox.n' + t.toString(36) + Math.random().toString(36).slice(2, 6)] = { movieId: id, by: S.userId, gid, at: t };
+        if (((l.seen || {})[k] == null || isRewatch(l, id)) && !Object.keys(f).some(x => x.startsWith('inbox.') && f[x].key === id)) {
+          f['inbox.n' + t.toString(36) + Math.random().toString(36).slice(2, 6)] = { key: id, by: S.userId, gid, at: t };
           asked++;
         }
         perUser.set(uid, f);
       });
     });
-    await Promise.all(Array.from(perUser.entries()).map(([uid, f]) => DB.patchList(uid, f)));
+    await Promise.all(Array.from(perUser.entries()).map(([uid, f]) => DB.patchList(uid, f))
+      .concat(together.map(gid => DB.addWatched(gid, id, S.userId))));
     if (S.pickedId === id) S.pickedId = null;
     toast('„' + titleOf(m) + '“ als gesehen markiert' + (asked ? ' – ' + asked + (asked > 1 ? ' Personen werden' : ' Person wird') + ' gefragt' : ''));
-  } catch (e) { fail(e); }
+  } catch (e) { fail(e); return; }
+  offerSequel(id, together);
 }
 
 async function unmarkSeen(id) {
@@ -628,10 +681,10 @@ function checkInbox() {
   const entries = Object.entries(l.inbox).sort((a, b) => (a[1].at || 0) - (b[1].at || 0));
   for (const [key, n] of entries) {
     if (inboxSkipped.has(key)) continue;
-    const id = n.movieId, k = L.mkey(id);
+    const id = L.K(n.key || n.movieId), k = id;
     const m = S.movies[id];
     if (!m) continue;
-    if ((l.seen || {})[k] != null) {
+    if ((l.seen || {})[k] != null && !isRewatch(l, id)) {
       DB.patchList(S.userId, { ['inbox.' + key]: null }).catch(() => {});
       continue;
     }
@@ -654,6 +707,7 @@ function checkInbox() {
 }
 
 async function answerInbox(key, id, choice) {
+  const notice = (myList().inbox || {})[key] || {};
   inboxOpen = null;
   closeDialog(false);
   const k = L.mkey(id), t = Date.now();
@@ -663,12 +717,16 @@ async function answerInbox(key, id, choice) {
   } else {
     f['watch.' + k] = null;
     myGroupIds().forEach(gid => Object.assign(f, shareFields(S.userId, gid, id, null)));
+    f['rewatch.' + k] = null;
     if (choice === 'seen') f['seen.' + k] = t;
   }
   try {
     await DB.patchList(S.userId, f);
     toast(choice === 'keep' ? 'Bleibt auf deiner Liste' : choice === 'seen' ? 'Als gesehen markiert' : 'Entfernt');
   } catch (e) { fail(e); }
+  if (choice === 'seen') {
+    await offerSequel(id, notice.gid && S.groups[notice.gid] ? [notice.gid] : []);
+  }
   setTimeout(checkInbox, 400);
 }
 
@@ -683,6 +741,7 @@ async function askTakeGroupList(gid, name) {
   const g = S.groups[gid];
   if (!g) return;
   const ids = L.groupEntries(g.members || [], S.lists, S.movies, gid)
+    .filter(e => L.groupAllows(g, e.movie))
     .map(e => e.id).filter(id => !inMyWatch(id) && !inMySeen(id));
   if (!ids.length) return;
   const ok = await uiConfirm('In „' + esc(name || gName(gid)) + '“ sind <b>' + ids.length + (ids.length === 1 ? ' Film' : ' Filme') +
@@ -704,13 +763,15 @@ async function addToPrivate(id) {
 }
 
 /* ---------- Beim Beitreten/Erstellen: Watchlist teilen? ---------- */
-async function askShareAll(gid, name) {
+async function askShareAll(gid, name, type) {
   initSkip.add(gid);
-  const watch = myList().watch || {};
+  const grp = { type: type || 'movie' };
+  const watch = {};
+  Object.entries(myList().watch || {}).forEach(([k, t]) => { if (L.groupAllows(grp, { type: L.isTv(k) ? 'tv' : 'movie' })) watch[k] = t; });
   const n = Object.keys(watch).length;
   let share = {};
   if (n) {
-    const ok = await uiConfirm('Deine Watchlist (<b>' + n + (n === 1 ? ' Film' : ' Filme') + '</b>) auch in „' + esc(name || gName(gid)) + '“ teilen?' +
+    const ok = await uiConfirm('Deine Watchlist (<b>' + n + ' Titel' + '</b>) auch in „' + esc(name || gName(gid)) + '“ teilen?' +
       '<br><span class="muted">Einzelne Filme kannst du später jederzeit hinzufügen oder entfernen.</span>', 'Alle teilen');
     if (ok) share = Object.assign({}, watch);
   }
@@ -722,12 +783,12 @@ async function askShareAll(gid, name) {
 /* ====================================================================
    Gruppen
    ==================================================================== */
-async function createGroup(name) {
+async function createGroup(name, type) {
   name = name.trim();
   if (!name) { toast('Bitte einen Namen für die Gruppe eingeben.', true); return; }
   initPaused++;
   try {
-    const g = await DB.createGroup(name, S.userId, L.makeCode);
+    const g = await DB.createGroup(name, S.userId, L.makeCode, type);
     initSkip.add(g.id);
     closeDialog();
     S.expectGroup = g.id;
@@ -736,7 +797,7 @@ async function createGroup(name) {
     S.filters = L.emptyFilters();
     toast('Gruppe „' + name + '“ erstellt');
     render();
-    await askShareAll(g.id, name);
+    await askShareAll(g.id, name, type);
     openInvite(g.id, name, g.code);
   } catch (e) { fail(e); }
   finally { initPaused--; }
@@ -764,7 +825,7 @@ async function joinByCode(code, silentIfMember) {
     S.tab.group = 'list';
     S.filters = L.emptyFilters();
     render();
-    if (joined) { await askShareAll(g.id, g.name); await askTakeGroupList(g.id, g.name); }
+    if (joined) { await askShareAll(g.id, g.name, g.type); await askTakeGroupList(g.id, g.name); }
   } catch (e) { fail(e); }
   finally { initPaused--; }
 }
@@ -813,11 +874,17 @@ function openInvite(gid, name, code) {
     '</div>');
 }
 
+function typeRadios(current) {
+  return '<div class="type-radios">' + Object.entries(L.GROUP_TYPES).map(([k, label]) =>
+    '<label class="type-radio"><input type="radio" name="type" value="' + k + '"' + (k === current ? ' checked' : '') + '><span>' + label + '</span></label>').join('') + '</div>';
+}
+
 function openNewGroup() {
   openDialog(
     '<h3>Neue Gruppe</h3>' +
-    '<form class="dlg-form" data-form="create-group">' +
+    '<form class="dlg-form wrap" data-form="create-group">' +
       '<input type="text" name="name" placeholder="Name, z.B. WG oder Filmclub" maxlength="40" aria-label="Gruppenname">' +
+      typeRadios('movie') +
       '<button type="submit" class="btn primary">Erstellen</button>' +
     '</form>' +
     '<div class="dlg-sep">oder</div>' +
@@ -832,9 +899,11 @@ function openNewGroup() {
 function openRename(gid) {
   const g = S.groups[gid];
   openDialog(
-    '<h3>Gruppe umbenennen</h3>' +
-    '<form class="dlg-form" data-form="rename-group" data-gid="' + esc(gid) + '">' +
+    '<h3>Gruppe bearbeiten</h3>' +
+    '<form class="dlg-form wrap" data-form="rename-group" data-gid="' + esc(gid) + '">' +
       '<input type="text" name="name" maxlength="40" value="' + esc(g.name) + '" aria-label="Gruppenname">' +
+      typeRadios(g.type || 'movie') +
+      '<p class="muted small">Was nicht zur Art passt, wird in der Gruppe ausgeblendet (nicht gelöscht).</p>' +
       '<button type="submit" class="btn primary">Speichern</button>' +
     '</form>' +
     '<div class="dlg-actions"><button type="button" class="btn ghost" data-action="dlg-cancel">Abbrechen</button></div>');
@@ -890,13 +959,13 @@ function voteNeedsMe(v) {
 function currentGroupEntries() {
   const g = currentGroup();
   if (!g) return [];
-  return L.groupEntries(g.members || [], S.lists, S.movies, S.space);
+  return L.groupEntries(g.members || [], S.lists, S.movies, S.space).filter(e => L.groupAllows(g, e.movie));
 }
 
 function newVoteForm() {
   return {
     title: 'Filmabend ' + new Date().toLocaleDateString('de-CH'),
-    method: 'approval', maxNominations: 2,
+    method: 'approval', maxNominations: 2, types: 'all',
     maxRuntime: null, maxFsk: null, genres: [],
     seenMode: 'any', seenMax: 1, notBy: []
   };
@@ -904,6 +973,7 @@ function newVoteForm() {
 
 function formConditions(f) {
   return {
+    types: f.types || 'all',
     maxRuntime: f.maxRuntime, maxFsk: f.maxFsk, genres: f.genres.slice(),
     seen: { mode: f.seenMode, max: f.seenMax, notBy: f.notBy.slice() }
   };
@@ -1059,14 +1129,14 @@ function renderGroupHead() {
   const members = (g.members || []).slice().sort((a, b) => nameOf(a).localeCompare(nameOf(b), 'de'));
   el.innerHTML =
     '<div class="gh-main">' +
-      '<h2>' + esc(g.name) + '</h2>' +
+      '<h2>' + esc(g.name) + ' <span class="gtype">' + L.GROUP_TYPES[g.type || 'movie'] + '</span></h2>' +
       '<div class="members">' + members.map(uid =>
         '<span class="member' + (uid === S.userId ? ' me' : '') + '">' + esc(nameOf(uid)) + '</span>').join('') +
       '</div>' +
     '</div>' +
     '<div class="gh-actions">' +
       '<button type="button" class="btn primary" data-action="invite">📨 Einladen</button>' +
-      '<button type="button" class="btn" data-action="rename-group" title="Umbenennen" aria-label="Umbenennen">✏️</button>' +
+      '<button type="button" class="btn" data-action="rename-group" title="Name und Art bearbeiten" aria-label="Bearbeiten">✏️</button>' +
       '<button type="button" class="btn danger" data-action="leave-group">Verlassen</button>' +
     '</div>';
 }
@@ -1083,7 +1153,8 @@ function renderSubtabs() {
   } else {
     const v = activeVote(S.space);
     tabs = [
-      ['list', 'Gemeinsame Liste', currentGroupEntries().length, S.tab.group === 'list'],
+      ['list', 'Liste', currentGroupEntries().length, S.tab.group === 'list'],
+      ['seen', 'Gesehen', groupWatchedEntries().length, S.tab.group === 'seen'],
       ['vote', 'Abstimmung' + (v ? (voteNeedsMe(v) ? ' 🔴' : ' 🗳') : ''), null, S.tab.group === 'vote']
     ];
   }
@@ -1094,8 +1165,22 @@ function renderSubtabs() {
 }
 
 /* ---------- Liste ---------- */
+/* Zusammen gesehene Filme der aktuellen Gruppe */
+function groupWatchedEntries() {
+  const g = currentGroup();
+  if (!g) return [];
+  const members = g.members || [];
+  return Object.values(S.watched[S.space] || {})
+    .map(w => Object.assign({}, w, { key: L.K(w.key || w.movieId) }))
+    .filter(w => S.movies[w.key])
+    .map(w => ({
+      id: w.key, movie: S.movies[w.key], addedAt: w.at, seenAt: w.at, by: w.by, wantedBy: [],
+      seenBy: members.filter(uid => ((S.lists[uid] && S.lists[uid].seen) || {})[w.key] != null)
+    }));
+}
+
 function currentEntries() {
-  if (currentGroup()) return currentGroupEntries();
+  if (currentGroup()) return S.tab.group === 'seen' ? groupWatchedEntries() : currentGroupEntries();
   return L.personalEntries(myList(), S.movies, S.tab.me === 'seen' ? 'seen' : 'watch');
 }
 
@@ -1128,8 +1213,19 @@ function renderChips(entries, g) {
     ? genres.map(x => chip('genre', x, x, genreCount[x], f.genres.has(x))).join('')
     : '<span class="muted">–</span>';
 
+  // Art (nur zeigen, wenn Filme und Serien gemischt vorkommen)
+  const typeCount = { movie: 0, tv: 0 };
+  entries.forEach(e => { typeCount[L.typeOf(e.movie)]++; });
+  const mixed = typeCount.movie > 0 && typeCount.tv > 0;
+  if (!mixed) f.types.clear();
+  $('row-type').classList.toggle('hidden', !mixed);
+  $('chips-type').innerHTML = [['movie', '🎬 Filme'], ['tv', '📺 Serien']]
+    .map(([k, label]) => chip('type', k, label, typeCount[k], f.types.has(k))).join('');
+
+  // Länge: nur Filme
   const lengthCount = {};
-  entries.forEach(e => { const k = L.lengthBucket(e.movie.runtime); lengthCount[k] = (lengthCount[k] || 0) + 1; });
+  entries.filter(e => L.typeOf(e.movie) === 'movie')
+    .forEach(e => { const k = L.lengthBucket(e.movie.runtime); lengthCount[k] = (lengthCount[k] || 0) + 1; });
   $('chips-length').innerHTML = L.LENGTH_BUCKETS
     .filter(b => b.key !== 'unknown' || lengthCount.unknown)
     .map(b => chip('length', b.key, b.label, lengthCount[b.key] || 0, f.lengths.has(b.key))).join('');
@@ -1162,19 +1258,22 @@ function renderListView() {
   const isGroup = !!g;
   document.body.classList.toggle('in-group', isGroup);
   $('add-title').textContent = 'Film hinzufügen';
+  document.querySelector('.card.add').classList.toggle('hidden', isGroup && S.tab.group === 'seen');
   renderSort(isGroup);
 
   const entries = currentEntries();
   renderChips(entries, g);
 
   const list = L.sortEntries(L.applyFilters(entries, S.filters, nameOf), S.sortKey);
-  const mode = isGroup ? 'group' : (S.tab.me === 'seen' ? 'seen' : 'watch');
+  const mode = isGroup ? (S.tab.group === 'seen' ? 'gseen' : 'group') : (S.tab.me === 'seen' ? 'seen' : 'watch');
 
   const grid = $('grid'), empty = $('empty');
   if (!entries.length) {
     grid.innerHTML = '';
-    empty.innerHTML = isGroup
-      ? 'Noch keine Filme. Die gemeinsame Liste besteht aus den persönlichen Listen aller Mitglieder – füge oben Filme zu deiner Liste hinzu oder lade Leute ein.'
+    empty.innerHTML = mode === 'gseen'
+      ? 'Noch keine gemeinsam gesehenen Filme. Wenn jemand einen Film als gesehen markiert und diese Gruppe ankreuzt, erscheint er hier.'
+      : isGroup
+      ? 'Noch keine Filme. Füge oben Filme hinzu (Gruppe ankreuzen) oder lade Leute ein.'
       : (mode === 'seen' ? 'Noch nichts gesehen. Markiere Filme auf deiner Watchlist mit „Gesehen“.' : 'Deine Watchlist ist leer – füge oben den ersten Film hinzu!');
     empty.classList.remove('hidden');
   } else if (!list.length) {
@@ -1190,11 +1289,11 @@ function renderListView() {
   const noun = entries.length === 1 ? 'Film' : 'Filme';
   $('summary').textContent = active
     ? list.length + ' von ' + entries.length + ' ' + noun
-    : entries.length + ' ' + noun + (isGroup ? ' in der gemeinsamen Liste' : mode === 'seen' ? ' gesehen' : ' auf deiner Watchlist');
+    : entries.length + ' ' + noun + (mode === 'gseen' ? ' zusammen gesehen' : isGroup ? ' in der gemeinsamen Liste' : mode === 'seen' ? ' gesehen' : ' auf deiner Watchlist');
   $('reset-filters').classList.toggle('hidden', !active);
   $('filter-count').textContent = active;
   $('filter-count').classList.toggle('hidden', !active);
-  $('random').classList.toggle('hidden', mode === 'seen');
+  $('random').classList.toggle('hidden', mode === 'seen' || mode === 'gseen');
   $('search-hint').textContent = $('search-input').disabled ? $('search-hint').textContent : searchHint();
 }
 
@@ -1207,6 +1306,12 @@ function renderCard(e, mode) {
   const trailerLang = m.trailerKey ? languageName(m.trailerLanguage) : null;
   const trailerTitle = trailerLang ? 'Trailer auf ' + trailerLang : (m.trailerKey ? 'Trailer' : 'Trailer auf YouTube suchen');
   const meta = [];
+  if (m.type === 'tv') {
+    meta.push('<span class="tv-tag">📺 Serie</span>');
+    const parts = [m.seasons ? m.seasons + (m.seasons === 1 ? ' Staffel' : ' Staffeln') : null,
+      m.episodes ? m.episodes + ' Folgen' : null, m.episodeRuntime ? '~' + m.episodeRuntime + ' min/Folge' : null].filter(Boolean);
+    if (parts.length) meta.push('<span>' + esc(parts.join(' · ')) + '</span>');
+  }
   if (m.runtime) meta.push('<span title="' + m.runtime + ' Minuten">⏱ ' + esc(fmtRuntime(m.runtime)) + '</span>');
   if (m.fsk != null) meta.push('<span class="fsk fsk' + m.fsk + '" title="Altersfreigabe">FSK ' + m.fsk + '</span>');
   if (m.rating) meta.push('<span title="TMDB-Bewertung">★ ' + esc(Number(m.rating).toFixed(1)) + '</span>');
@@ -1214,6 +1319,10 @@ function renderCard(e, mode) {
   let info = '', actions = '';
   const trailerBtn = '<button type="button" class="btn primary" data-action="trailer" data-id="' + e.id + '" title="' + esc(trailerTitle) + '">' +
     (m.trailerKey ? '▶ Trailer' : '▶ Trailer suchen') + '</button>';
+
+  if (isRewatch(myList(), e.id) && (mode === 'watch' || mode === 'seen')) {
+    meta.unshift('<span class="rewatch-tag" title="Schon gesehen – nochmals schauen">🔁 Rewatch</span>');
+  }
 
   if (mode === 'watch') {
     info = '<span class="added">auf der Liste seit ' + fmtDate(e.addedAt) + '</span>';
@@ -1223,14 +1332,26 @@ function renderCard(e, mode) {
   } else if (mode === 'seen') {
     info = '<span class="added">gesehen am ' + fmtDate(e.seenAt) + '</span>';
     actions = trailerBtn +
-      '<button type="button" class="btn" data-action="back-to-list" data-id="' + e.id + '">↩ Nochmals schauen</button>' +
+      (inMyWatch(e.id)
+        ? '<span class="muted small">🔁 auf der Watchlist</span>'
+        : '<button type="button" class="btn" data-action="rewatch" data-id="' + e.id + '" title="Bleibt bei „Gesehen“ und kommt wieder auf die Watchlist">🔁 Rewatch</button>') +
       '<button type="button" class="btn danger" data-action="remove-seen" data-id="' + e.id + '" title="Entfernen" aria-label="Entfernen">🗑</button>';
+  } else if (mode === 'gseen') {
+    info =
+      '<span class="added">zusammen gesehen am ' + fmtDate(e.seenAt) + (e.by ? ' · eingetragen von ' + esc(nameOf(e.by)) : '') + '</span>' +
+      '<div class="people seen"><span class="pl">Gesehen:</span> ' + (e.seenBy.length
+        ? e.seenBy.map(uid => '<span class="person seen' + (uid === S.userId ? ' me' : '') + '">👁 ' + esc(nameOf(uid)) + '</span>').join('')
+        : '<span class="nobody">niemand markiert</span>') + '</div>';
+    actions = trailerBtn +
+      (inMyWatch(e.id) ? '' : '<button type="button" class="btn" data-action="rewatch" data-id="' + e.id + '" title="Nochmals schauen">🔁 Rewatch</button>') +
+      '<button type="button" class="btn danger" data-action="remove-watched" data-id="' + e.id + '" title="Aus dem Verlauf der Gruppe entfernen" aria-label="Aus dem Verlauf entfernen">✕</button>';
   } else {
     const mine = e.wantedBy.includes(S.userId);
     const iSaw = e.seenBy.includes(S.userId);
     info =
       '<div class="people"><span class="pl">Will sehen:</span> ' + e.wantedBy.map(uid =>
-        '<span class="person' + (uid === S.userId ? ' me' : '') + '">' + esc(nameOf(uid)) + '</span>').join('') + '</div>' +
+        '<span class="person' + (uid === S.userId ? ' me' : '') + '"' + (isRewatch(S.lists[uid], e.id) ? ' title="Rewatch"' : '') + '>' +
+          (isRewatch(S.lists[uid], e.id) ? '🔁 ' : '') + esc(nameOf(uid)) + '</span>').join('') + '</div>' +
       '<div class="people seen"><span class="pl">Gesehen:</span> ' + (e.seenBy.length
         ? e.seenBy.map(uid => '<span class="person seen' + (uid === S.userId ? ' me' : '') + '">👁 ' + esc(nameOf(uid)) + '</span>').join('')
         : '<span class="nobody">noch niemand</span>') + '</div>' +
@@ -1245,7 +1366,7 @@ function renderCard(e, mode) {
   }
 
   return '' +
-    '<article class="movie' + (picked ? ' picked' : '') + (mode === 'seen' ? ' watched' : '') +
+    '<article class="movie' + (picked ? ' picked' : '') + (mode === 'seen' || mode === 'gseen' ? ' watched' : '') +
       '" data-id="' + e.id + '" tabindex="0" role="link" aria-label="Trailer von ' + esc(titleOf(m)) + ' öffnen">' +
       (picked ? '<div class="pick-badge">🎲 Vorschlag</div>' : '') +
       '<div class="poster">' +
@@ -1278,7 +1399,8 @@ function pickRandom() {
 /* ---------- Abstimmungs-Ansicht ---------- */
 function miniMovie(m, extra, actions, rowAction) {
   const poster = TMDB.posterUrl(m.posterPath, 'w92');
-  const bits = [m.year, m.runtime ? fmtRuntime(m.runtime) : null, m.fsk != null ? 'FSK ' + m.fsk : null].filter(Boolean);
+  const bits = [m.type === 'tv' ? '📺 Serie' : null, m.year, m.runtime ? fmtRuntime(m.runtime) : null,
+    m.type === 'tv' && m.seasons ? m.seasons + (m.seasons === 1 ? ' Staffel' : ' Staffeln') : null, m.fsk != null ? 'FSK ' + m.fsk : null].filter(Boolean);
   return '<div class="vrow' + (rowAction ? ' clickable' : '') + '"' + (rowAction || '') + '>' +
     (poster ? '<img src="' + esc(poster) + '" alt="">' : '<span class="noposter">🎬</span>') +
     '<div class="vtext"><b>' + esc(titleOf(m)) + '</b>' +
@@ -1355,7 +1477,7 @@ function renderVoteCard(v, g, compact) {
 }
 
 function renderNominate(v, g) {
-  const entries = L.groupEntries(g.members || [], S.lists, S.movies, S.space);
+  const entries = L.groupEntries(g.members || [], S.lists, S.movies, S.space).filter(e => L.groupAllows(g, e.movie));
   const nominated = L.nominatedIds(v);
   const mine = L.nominationsBy(v, S.userId);
   const can = L.canNominate(v, S.userId);
@@ -1397,7 +1519,7 @@ function renderNominate(v, g) {
 
 function renderBallot(v, g) {
   const nominees = L.nominatedIds(v);
-  const mine = ((v.ballots || {})[S.userId] || []).map(Number);
+  const mine = ((v.ballots || {})[S.userId] || []).map(L.K);
   const hint = v.method === 'approval' ? 'Tippe alle Filme an, die für dich okay sind.'
     : v.method === 'single' ? 'Tippe den einen Film an, den du am liebsten sehen willst.'
     : 'Tippe deine Favoriten der Reihe nach an: zuerst Platz 1 (3 Punkte), dann 2 (2), dann 3 (1). Nochmals tippen entfernt.';
@@ -1424,7 +1546,8 @@ function renderBallot(v, g) {
 }
 
 function renderResult(v, compact) {
-  const res = v.result || { ranking: [], winner: null, tie: [] };
+  const r0 = v.result || { ranking: [], winner: null, tie: [] };
+  const res = Object.assign({}, r0, { winner: r0.winner != null ? L.K(r0.winner) : null, ranking: (r0.ranking || []).map(r => Object.assign({}, r, { id: L.K(r.id) })) });
   const w = res.winner != null ? S.movies[res.winner] : null;
   if (!w) return '<p class="muted">Kein Ergebnis.</p>';
   const max = Math.max(1, ...res.ranking.map(r => r.score));
@@ -1487,8 +1610,15 @@ function renderVoteForm() {
       opt('maxNominations', 0, '∞ Unbegrenzt', f.maxNominations === 0) + '</div>' +
 
     '<h3 class="fsub">Bedingungen <span class="muted small">(optional)</span></h3>' +
-    '<div class="fl">Länge höchstens</div>' +
-    '<div class="chips">' + [[null, 'egal'], [90, '90 min'], [120, '2 h'], [150, '2½ h']].map(([v, l]) => opt('maxRuntime', v, l, f.maxRuntime === v)).join('') + '</div>' +
+    ((g.type || 'movie') === 'mixed'
+      ? '<div class="fl">Art</div><div class="chips">' +
+          [['all', 'Filme &amp; Serien'], ['movie', '🎬 nur Filme'], ['tv', '📺 nur Serien']].map(([v, l]) =>
+            '<button type="button" class="chip' + (f.types === v ? ' active' : '') + '" data-action="form-set" data-key="types" data-value="' + v + '">' + l + '</button>').join('') + '</div>'
+      : '') +
+    ((g.type || 'movie') !== 'tv' && f.types !== 'tv'
+      ? '<div class="fl">Länge höchstens' + ((g.type || 'movie') === 'mixed' && f.types === 'all' ? ' <span class="muted small">(gilt nur für Filme)</span>' : '') + '</div>' +
+        '<div class="chips">' + [[null, 'egal'], [90, '90 min'], [120, '2 h'], [150, '2½ h']].map(([v, l]) => opt('maxRuntime', v, l, f.maxRuntime === v)).join('') + '</div>'
+      : '') +
 
     '<div class="fl">Altersfreigabe höchstens</div>' +
     '<div class="chips">' + [[null, 'egal']].concat(L.FSK_LEVELS.slice(0, 4).map(n => [n, 'FSK ' + n])).map(([v, l]) => opt('maxFsk', v, l, f.maxFsk === v)).join('') + '</div>' +
@@ -1558,9 +1688,10 @@ function renderSearchResults() {
     box.innerHTML = searchResults.map((r, i) => {
       const poster = TMDB.posterUrl(r.posterPath, 'w92');
       const g = currentGroup();
-      const inGroup = g && inGroupList(S.space, r.id);
-      const onList = g ? inGroup : inMyWatch(r.id), seen = inMySeen(r.id);
-      const tag = inGroup ? '✓ in der Gruppe' : onList ? '✓ auf deiner Liste' : seen ? '👁 gesehen · ' + (r.year || '') : (r.year || '');
+      const inGroup = g && inGroupList(S.space, r.key);
+      const onList = g ? inGroup : inMyWatch(r.key), seen = inMySeen(r.key);
+      const base = (r.type === 'tv' ? '📺 Serie · ' : '') + (r.year || '');
+      const tag = inGroup ? '✓ in der Gruppe' : onList ? '✓ auf deiner Liste' : seen ? '👁 gesehen · ' + base : base;
       return '<button type="button" class="result' + (i === searchIndex ? ' hover' : '') + (onList ? ' onlist' : '') + '" data-index="' + i + '">' +
         (poster ? '<img src="' + esc(poster) + '" alt="">' : '<span class="noposter">🎬</span>') +
         '<span class="rt"><strong>' + esc(r.title) + '</strong>' + (r.subtitle ? ' <em>' + esc(r.subtitle) + '</em>' : '') + '</span>' +
@@ -1648,7 +1779,7 @@ function initStaticUi() {
     const f = S.filters, v = c.dataset.value;
     if (c.dataset.filter === 'maxseen') f.maxSeen = v === '' ? null : Number(v);
     else {
-      const set = { genre: f.genres, length: f.lengths, decade: f.decades, notseen: f.notSeenBy }[c.dataset.filter];
+      const set = { genre: f.genres, length: f.lengths, decade: f.decades, notseen: f.notSeenBy, type: f.types }[c.dataset.filter];
       if (set.has(v)) set.delete(v); else set.add(v);
     }
     render();
@@ -1671,12 +1802,12 @@ function initStaticUi() {
     if (!form) return;
     e.preventDefault();
     const val = n => (form.elements[n] ? form.elements[n].value : '');
-    if (form.dataset.form === 'create-group') createGroup(val('name'));
+    if (form.dataset.form === 'create-group') createGroup(val('name'), val('type') || 'movie');
     else if (form.dataset.form === 'join-group') joinByCode(val('code'));
     else if (form.dataset.form === 'rename-group') {
       const name = val('name').trim();
       if (!name) return;
-      DB.renameGroup(form.dataset.gid, name).then(() => { closeDialog(); toast('Umbenannt'); }, fail);
+      DB.renameGroup(form.dataset.gid, name, val('type') || 'movie').then(() => { closeDialog(); toast('Gespeichert'); }, fail);
     }
   });
 
@@ -1716,7 +1847,7 @@ function onClick(ev) {
     return;
   }
   const a = el.dataset.action;
-  const id = el.dataset.id != null ? Number(el.dataset.id) : null;
+  const id = el.dataset.id != null ? L.K(el.dataset.id) : null;
   const gid = S.space;
   const vote = el.dataset.vote ? Object.assign({ id: el.dataset.vote }, (S.votes[gid] || {})[el.dataset.vote]) : null;
   if (el.disabled) return;
@@ -1755,7 +1886,12 @@ function onClick(ev) {
 
     case 'trailer': ev.stopPropagation(); if (S.movies[id]) openTrailer(S.movies[id]); break;
     case 'seen': markSeen(id, null); break;
-    case 'back-to-list': backToList(id); break;
+    case 'rewatch': rewatch(id, currentGroup() ? gid : null); break;
+    case 'remove-watched':
+      uiConfirm('„<b>' + esc(titleOf(S.movies[id])) + '</b>“ aus dem Verlauf von „' + esc(gName(gid)) + '“ entfernen?' +
+        '<br><span class="muted">Wer ihn als gesehen markiert hat, behält das.</span>', 'Entfernen', true)
+        .then(ok => ok && DB.removeWatched(gid, id).then(() => toast('Aus dem Verlauf entfernt'), fail));
+      break;
     case 'remove-watch': removeFromPrivate(id); break;
     case 'remove-seen': removeFromSeen(id); break;
     case 'toggle-want': toggleGroupWant(gid, id); break;

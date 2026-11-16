@@ -5,10 +5,29 @@
  * und Auszählung. Wird von app.js benutzt und separat getestet.
  */
 
-/* ---------- Schlüssel ---------- */
-// Filme werden in Maps unter "m<TMDB-ID>" abgelegt (z.B. m27205)
-export const mkey = id => 'm' + id;
-export const idFromKey = k => Number(String(k).replace(/^m/, ''));
+/* ---------- Schlüssel ----------
+   Jeder Titel hat einen Schlüssel: Filme "m<TMDB-ID>" (z.B. m27205),
+   Serien "t<TMDB-ID>" (z.B. t1399). Reine Zahlen (ältere Daten) sind Filme. */
+export function K(x) {
+  if (x == null) return x;
+  const s = String(x);
+  return /^[mt]\d+$/.test(s) ? s : 'm' + s.replace(/^m/, '');
+}
+export const mkey = K;
+export const idFromKey = K;
+export const isTv = k => String(k).startsWith('t');
+export const tmdbId = k => Number(String(K(k)).slice(1));
+export const keyOf = m => (m.type === 'tv' ? 't' : 'm') + m.id;
+/* Dokument-ID in der Sammlung "movies": Filme "27205", Serien "tv1399" */
+export const docIdOf = k => (isTv(k) ? 'tv' : '') + tmdbId(k);
+export const typeOf = m => (m && m.type === 'tv' ? 'tv' : 'movie');
+
+/* Erlaubte Arten einer Gruppe: 'movie' (Standard, auch für ältere Gruppen), 'tv', 'mixed' */
+export function groupAllows(group, m) {
+  const t = (group && group.type) || 'movie';
+  return t === 'mixed' || t === typeOf(m);
+}
+export const GROUP_TYPES = { movie: '🎬 Nur Filme', tv: '📺 Nur Serien', mixed: '🎬📺 Gemischt' };
 
 /* ---------- Einteilungen ---------- */
 export const LENGTH_BUCKETS = [
@@ -115,11 +134,11 @@ export function groupEntries(members, lists, movies, gid) {
 /* ---------- Filter ---------- */
 
 export function emptyFilters() {
-  return { genres: new Set(), lengths: new Set(), decades: new Set(), text: '', notSeenBy: new Set(), maxSeen: null };
+  return { genres: new Set(), lengths: new Set(), decades: new Set(), types: new Set(), text: '', notSeenBy: new Set(), maxSeen: null };
 }
 
 export function activeFilterCount(f) {
-  return f.genres.size + f.lengths.size + f.decades.size + (f.text.trim() ? 1 : 0) +
+  return f.genres.size + f.lengths.size + f.decades.size + (f.types ? f.types.size : 0) + (f.text.trim() ? 1 : 0) +
     f.notSeenBy.size + (f.maxSeen != null ? 1 : 0);
 }
 
@@ -130,7 +149,9 @@ export function applyFilters(entries, f, nameOf) {
     const m = e.movie;
     const genres = m.genres || [];
     if (f.genres.size && !genres.some(g => f.genres.has(g))) return false;
-    if (f.lengths.size && !f.lengths.has(lengthBucket(m.runtime))) return false;
+    if (f.types && f.types.size && !f.types.has(typeOf(m))) return false;
+    // Länge gilt nur für Filme – Serien werden davon nicht gefiltert
+    if (f.lengths.size && typeOf(m) === 'movie' && !f.lengths.has(lengthBucket(m.runtime))) return false;
     if (f.decades.size && !f.decades.has(String(decadeOf(m.year)))) return false;
     if (e.seenBy) {
       if (f.notSeenBy.size && e.seenBy.some(uid => f.notSeenBy.has(uid))) return false;
@@ -155,14 +176,15 @@ export const METHODS = {
 };
 
 export function emptyConditions() {
-  return { maxRuntime: null, maxFsk: null, genres: [], seen: { mode: 'any', max: 0, notBy: [] } };
+  return { types: 'all', maxRuntime: null, maxFsk: null, genres: [], seen: { mode: 'any', max: 0, notBy: [] } };
 }
 
 /* Passt ein Gruppen-Eintrag zu den Bedingungen einer Abstimmung? */
 export function eligible(entry, cond) {
   const c = cond || emptyConditions();
   const m = entry.movie;
-  if (c.maxRuntime != null && !(m.runtime && m.runtime <= c.maxRuntime)) return false;
+  if (c.types && c.types !== 'all' && typeOf(m) !== c.types) return false;
+  if (c.maxRuntime != null && typeOf(m) === 'movie' && !(m.runtime && m.runtime <= c.maxRuntime)) return false;
   if (c.maxFsk != null && !(m.fsk != null && m.fsk <= c.maxFsk)) return false;
   if (c.genres && c.genres.length && !(m.genres || []).some(g => c.genres.includes(g))) return false;
   const s = c.seen || { mode: 'any' };
@@ -177,7 +199,9 @@ export function eligible(entry, cond) {
 export function conditionsSummary(cond, nameOf) {
   const c = cond || emptyConditions();
   const out = [];
-  if (c.maxRuntime != null) out.push('max. ' + c.maxRuntime + ' min');
+  if (c.types === 'movie') out.push('nur Filme');
+  if (c.types === 'tv') out.push('nur Serien');
+  if (c.maxRuntime != null) out.push('Filme max. ' + c.maxRuntime + ' min');
   if (c.maxFsk != null) out.push('max. FSK ' + c.maxFsk);
   if (c.genres && c.genres.length) out.push(c.genres.join(' / '));
   const s = c.seen || { mode: 'any' };
@@ -212,9 +236,9 @@ export function nominationLimitText(max) {
 
 /* Stimmzettel bereinigen: nur Nominierte, keine Doppelten, je nach Methode begrenzt */
 export function cleanBallot(method, ids, nominees) {
-  const allowed = new Set(nominees);
+  const allowed = new Set(nominees.map(K));
   const out = [];
-  (ids || []).forEach(id => { id = Number(id); if (allowed.has(id) && !out.includes(id)) out.push(id); });
+  (ids || []).forEach(id => { id = K(id); if (allowed.has(id) && !out.includes(id)) out.push(id); });
   if (method === 'single') return out.slice(0, 1);
   if (method === 'ranked') return out.slice(0, Math.min(3, nominees.length));
   return out;
@@ -222,7 +246,8 @@ export function cleanBallot(method, ids, nominees) {
 
 /* Tippen auf einen Film im Stimmzettel → neuer Stimmzettel */
 export function toggleBallot(method, ballot, id, nominees) {
-  const cur = (ballot || []).map(Number);
+  const cur = (ballot || []).map(K);
+  id = K(id);
   let next;
   if (method === 'single') next = cur[0] === id ? [] : [id];
   else if (cur.includes(id)) next = cur.filter(x => x !== id);       // abwählen (Rangfolge rückt nach)
@@ -247,7 +272,7 @@ export function tally(vote) {
   });
   const ranking = nominees
     .map(id => ({ id, score: scores[id], votes: votes[id] }))
-    .sort((a, b) => b.score - a.score || b.votes - a.votes || a.id - b.id);
+    .sort((a, b) => b.score - a.score || b.votes - a.votes || String(a.id).localeCompare(String(b.id)));
   return { ranking, voterCount: Object.keys(ballots).filter(uid => (ballots[uid] || []).length).length };
 }
 
@@ -275,6 +300,17 @@ export function normalizeCode(s) {
   return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
 }
 
+/* Serien: Altersfreigabe aus TMDB content_ratings (DE, sonst CH) */
+export function fskFromContentRatings(cr) {
+  const results = (cr && cr.results) || [];
+  for (const country of ['DE', 'CH']) {
+    const c = results.find(r => r.iso_3166_1 === country);
+    const n = c ? parseInt(String(c.rating || '').replace(/^FSK\s*/i, ''), 10) : NaN;
+    if (Number.isFinite(n) && n >= 0 && n <= 18) return n;
+  }
+  return null;
+}
+
 /* Aus TMDB release_dates die Altersfreigabe lesen (DE, sonst CH) */
 export function fskFromReleaseDates(releaseDates) {
   const results = (releaseDates && releaseDates.results) || [];
@@ -292,4 +328,18 @@ export function fskFromReleaseDates(releaseDates) {
     }
   }
   return null;
+}
+
+/* ---------- Filmreihen (Fortsetzungen) ---------- */
+
+/* parts: Teile einer TMDB-Collection [{id, release_date, …}].
+   Liefert den nächsten Teil nach currentId (nach Erscheinungsdatum), sonst null.
+   Teile ohne Datum kommen ans Ende (meist angekündigt, aber ohne Termin). */
+export function nextInCollection(parts, currentId) {
+  const sorted = (parts || []).slice().sort((a, b) => {
+    const da = a.release_date || '9999', dbb = b.release_date || '9999';
+    return da.localeCompare(dbb) || a.id - b.id;
+  });
+  const i = sorted.findIndex(p => p.id === Number(currentId));
+  return i >= 0 && i < sorted.length - 1 ? sorted[i + 1] : null;
 }
